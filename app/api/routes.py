@@ -14,7 +14,7 @@ from app.services.crawler_engine import (
 )
 from app.services.demand import demand_candidates
 from app.services.settings import get_settings, update_recent_hours
-from app.services.quality import quality_overview
+from app.services.quality import (\n    quality_collection, quality_demands, quality_overview, quality_sources,\n)
 from app.storage.db import (create_feedback, get_recent_hours, list_comments, list_feedback, upsert_comment)
 
 router = APIRouter(prefix="/api/v1")
@@ -296,5 +296,35 @@ def get_quality_overview(
 ):
     try:
         return quality_overview(since_hours)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/quality/collection")
+def get_quality_collection(
+    since_hours: int = Query(168, ge=1, le=8760),
+):
+    try:
+        return quality_collection(since_hours)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/quality/demands")
+def get_quality_demands(
+    since_hours: int = Query(168, ge=1, le=8760),
+):
+    try:
+        return quality_demands(since_hours)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/quality/sources")
+def get_quality_sources(
+    since_hours: int = Query(168, ge=1, le=8760),
+):
+    try:
+        return quality_sources(since_hours)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
