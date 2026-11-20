@@ -322,3 +322,20 @@ def get_quality_thresholds(project_id: str) -> dict:
                            (project_id,)).fetchone()
     return dict(row) if row else {"project_id": project_id, "min_hits": 3,
         "min_valid_demands": 1, "max_duplicate_rate": 0.7, "max_irrelevant_rate": 0.6}
+
+
+def get_verification_batch(batch_id: int) -> dict | None:
+    result = refresh_verification_batch(batch_id)
+    if not result:
+        return None
+    thresholds = get_quality_thresholds(result["project_id"])
+    for item in result.get("results", []):
+        item["quality_pass"] = (
+            item["hit_count"] >= thresholds["min_hits"]
+            and item["valid_demand_count"] >= thresholds["min_valid_demands"]
+            and (item["duplicate_rate"] or 0) <= thresholds["max_duplicate_rate"]
+            and (item["irrelevant_rate"] if item["irrelevant_rate"] is not None else 1)
+                <= thresholds["max_irrelevant_rate"]
+        )
+    result["thresholds"] = thresholds
+    return result
