@@ -8,7 +8,7 @@
 - 采集库：按研究主题建立项目，在项目下保存关键词搜索、博主主页、指定内容等采集对象；支持启停、重复运行和删除采集配置，删除配置不删除历史评论。
 - MediaCrawler 运行适配器：首次安装上游代码与依赖，按平台启动可见浏览器。
 - 国内平台：小红书、抖音、快手、B站、微博、贴吧、知乎；扩展平台：今日头条、微信公众号文章、微信视频号、YouTube、Reddit、TikTok、X、Instagram、Threads、LinkedIn、Telegram、Quora，以及 Facebook / Pinterest 公共广告库。未实测连接器均明确标记状态。
-- 任务方式：关键词搜索、指定内容链接 / ID、博主主页。
+- 任务方式：关键词搜索、指定内容链接 / ID、博主主页。\n- 需求发现：独立搜索策略（研究主题、关键词集合、平台范围）、发现批次、发现内容入库、人工审核后沉淀为长期追踪来源。发现批次会明确区分“已准备”与“平台实际执行”，未接入的搜索适配器不会伪报成功。
 - 一级评论和可选二级回复，JSONL 导出，自动导入统一 SQLite。
 - 评论时间与原帖时间分离，默认 72 小时窗口可在工作台配置（1–8760 小时）。
 - 可选 Social Media Research CLI（MIT）扩展引擎，支持只读采集命令；采集结果尽可能归一化入库。
@@ -67,7 +67,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `POST /api/v1/analysis/run`
 - `GET /api/v1/demands`
 - `GET /api/v1/analytics/trends?since_hours=720&bucket=day`
-- `GET /api/v1/collectors/reverse/status` / `POST /api/v1/collectors/reverse/install`
+- `GET /api/v1/discovery/strategies?project_id=...` / `POST /api/v1/discovery/projects/{project_id}/strategies`\n- `POST /api/v1/discovery/strategies/{strategy_id}/runs`：生成发现批次及查询词清单（当前为 prepared，不代表平台已执行）\n- `GET /api/v1/discovery/results` / `POST /api/v1/discovery/runs/{run_id}/results`\n- `POST /api/v1/discovery/results/{content_id}/approve`：审核作者并沉淀为采集库来源\n- `GET /api/v1/collectors/reverse/status` / `POST /api/v1/collectors/reverse/install`
 - `POST /api/v1/collectors/reverse/collect`
 - `GET /docs`
 
@@ -80,7 +80,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - [OpenMediaCrawl](https://github.com/Tommyapi/OpenMediaCrawl)：MIT，备选 Node.js 采集引擎，当前列入平台能力评估，尚未接入主任务调度。
 - [NewsCrawler](https://github.com/NanmiCoder/NewsCrawler)：GPL-3.0，适合微信公众号 / 今日头条等文章正文提取；不将正文提取误报为评论采集。
 
-## 明确未完成 / 实测边界
+## 发现引擎当前边界\n\n当前实现完成搜索策略管理、查询批次、发现结果入库和来源审核闭环；批次生成只准备搜索清单，不等于已对各平台执行搜索。下一阶段需逐个平台接入搜索适配器，记录实际支持的搜索方式、分页、时间字段、授权状态和错误原因。搜索引擎索引、平台站内搜索和评论获取是不同能力，不能将其中任一项描述为“覆盖全网全部评论”。\n\n## 明确未完成 / 实测边界
 
 - GitHub CI 不能验证真实平台账号登录、扫码、验证码、风控或评论分页。
 - 国内七个平台仍需本机真实登录与评论分页验证；扩展平台 CLI 适配器需要逐个平台验证命令参数、字段映射和时间戳。
