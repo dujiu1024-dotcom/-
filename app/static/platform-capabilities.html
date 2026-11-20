@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>平台能力矩阵｜需求情报工作台</title>
+<style>
+:root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#182230;background:#f5f7fa;--line:#e5eaf0;--muted:#6c7a8d;--blue:#315efb}
+*{box-sizing:border-box}body{margin:0}.wrap{max-width:1500px;margin:auto;padding:28px}.head{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;margin-bottom:20px}.head h1{margin:0 0 8px;font-size:25px}.head p{margin:0;color:var(--muted);font-size:13px}.btn{border:0;border-radius:8px;padding:9px 13px;background:var(--blue);color:#fff;cursor:pointer;font-weight:600}.btn.secondary{background:#edf1f7;color:#33435a}.panel{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}.notice{background:#fff8e8;border:1px solid #f1dfb6;border-radius:9px;padding:13px 15px;font-size:13px;line-height:1.7;margin-bottom:16px}.stats{display:flex;gap:24px;flex-wrap:wrap;color:var(--muted);font-size:12px}.stats b{color:#1e2c40;font-size:18px;display:block;margin-top:4px}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:1050px;font-size:12px}th,td{text-align:left;padding:12px;border-bottom:1px solid #edf0f4;vertical-align:top}th{background:#f8fafc;color:#66758a;white-space:nowrap}.cell{display:grid;gap:5px;min-width:110px}.pill{display:inline-flex;width:max-content;border-radius:20px;padding:4px 7px;font-size:10px;background:#edf2ff;color:#3656a3}.pill.ok{background:#e8f7ef;color:#167548}.pill.bad{background:#fff0ef;color:#b33d35}.pill.gray{background:#f0f2f5;color:#66758a}.small{font-size:10px;color:var(--muted);line-height:1.5}.record{white-space:nowrap;padding:7px 9px;font-size:11px}.foot{font-size:11px;color:var(--muted);line-height:1.7}dialog{border:0;border-radius:13px;padding:0;width:min(520px,calc(100vw - 28px));box-shadow:0 20px 70px #17243833}dialog::backdrop{background:#17243877}.modalhead,.modalfoot{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}.modalfoot{border-bottom:0;border-top:1px solid var(--line);justify-content:flex-end;gap:8px}.modalbody{padding:18px 20px;display:grid;gap:12px}.field{display:grid;gap:6px}.field label{font-size:11px;color:var(--muted)}input,select,textarea{width:100%;border:1px solid #dce2ea;border-radius:8px;padding:9px;font:inherit;font-size:13px}textarea{min-height:82px;resize:vertical}.toast{position:fixed;right:20px;bottom:20px;background:#1e2c40;color:#fff;padding:12px 16px;border-radius:8px;display:none;font-size:12px;max-width:380px}
+@media(max-width:700px){.wrap{padding:18px 12px}.head{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body><main class="wrap">
+<header class="head"><div><h1>七平台能力矩阵</h1><p>逐平台、逐操作区分适配器入口与真实验证状态。</p></div><div><a href="/" style="font-size:12px;color:#315efb">返回工作台</a>　<button class="btn secondary" id="reload">刷新</button></div></header>
+<div class="notice" id="policy">加载能力矩阵…</div>
+<section class="panel"><div class="stats"><div>平台数量<b id="platformCount">—</b></div><div>能力项<b id="operationCount">—</b></div><div>已有实测记录<b id="recordCount">—</b></div><div>真机验证<b id="liveStatus">未执行</b></div></div></section>
+<section class="panel"><div class="tablewrap" id="matrix">正在加载…</div></section>
+<p class="foot">判定口径：适配器可用仅代表代码中存在对应执行入口，不代表平台当前可访问、登录态有效、数据可稳定返回。只有提交带证据的验证记录后，才会显示实测状态。当前调度要求跳过真机验证，因此不得将待实测项目标记为通过。</p>
+</main>
+<dialog id="dialog"><form id="form"><div class="modalhead"><strong>新增平台验证记录</strong><button type="button" class="btn secondary" id="close">关闭</button></div><div class="modalbody">
+<div class="field"><label>平台</label><input id="platformName" disabled></div>
+<div class="field"><label>能力项</label><select id="operation"></select></div>
+<div class="field"><label>验证状态</label><select id="status"><option value="passed">实测通过</option><option value="partial">部分通过</option><option value="failed">实测失败</option><option value="unavailable">当前不可用</option><option value="skipped">跳过验证</option></select></div>
+<div class="field"><label>证据（必填：测试步骤、结果摘要或跳过原因）</label><textarea id="evidence" required maxlength="4000"></textarea></div>
+<div class="field"><label>引擎版本</label><input id="engineVersion" maxlength="200" placeholder="例如 MediaCrawler commit / release"></div>
+<div class="field"><label>验证环境</label><input id="environment" maxlength="500" placeholder="本机系统、Python 版本、登录方式等"></div>
+<div class="field"><label>补充说明</label><textarea id="notes" maxlength="4000"></textarea></div>
+</div><div class="modalfoot"><button type="button" class="btn secondary" id="cancel">取消</button><button class="btn" type="submit">保存验证记录</button></div></form></dialog>
+<div class="toast" id="toast"></div>
+<script>
+const $=id=>document.getElementById(id);let matrixData=null,selectedPlatform=null;
+const labels={passed:"实测通过",partial:"部分通过",failed:"实测失败",unavailable:"当前不可用",skipped:"跳过验证",not_tested:"待实测"};
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function api(path,opts={}){const r=await fetch(path,{headers:{"Content-Type":"application/json"},...opts});let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.detail||r.statusText);return d}
+function toast(msg){$("toast").textContent=msg;$("toast").style.display="block";setTimeout(()=>$("toast").style.display="none",3000)}
+function pill(status){const cls=status==="passed"?"ok":(["failed","unavailable"].includes(status)?"bad":"gray");return '<span class="pill '+cls+'">'+esc(labels[status]||status)+'</span>'}
+function render(data){matrixData=data;$("policy").textContent=data.live_test_note+" "+data.verification_policy;$("platformCount").textContent=data.items.length;$("operationCount").textContent=data.operations.length*data.items.length;$("recordCount").textContent=data.items.reduce((n,p)=>n+Object.values(p.operations).filter(o=>o.verification_status!=="not_tested").length,0);$("liveStatus").textContent=data.live_test_performed?"已执行":"按要求跳过";
+const headers=data.operations.map(o=>'<th>'+esc(o.name)+'</th>').join("");
+$("matrix").innerHTML='<table><thead><tr><th>平台 / 引擎</th>'+headers+'<th>操作</th></tr></thead><tbody>'+data.items.map(p=>'<tr><td><strong>'+esc(p.name)+'</strong><div class="small">'+esc(p.code)+' · '+esc(p.engine)+'</div></td>'+data.operations.map(o=>{const x=p.operations[o.code];return '<td><div class="cell">'+(x.adapter_available?'<span class="pill">有代码入口</span>':'<span class="pill bad">未接入</span>')+pill(x.verification_status)+'<div class="small">'+esc(x.adapter_note)+'</div>'+(x.last_verified_at?'<div class="small">'+esc(x.last_verified_at)+'</div>':'')+'</div></td>'}).join("")+'<td><button class="btn record" data-record="'+esc(p.code)+'">记录验证</button></td></tr>').join("")+'</tbody></table>'}
+async function load(){try{const data=await api("/api/v1/platform-capabilities");render(data)}catch(e){$("matrix").textContent=e.message}}
+function openRecord(code){selectedPlatform=code;const p=matrixData.items.find(x=>x.code===code);$("platformName").value=p.name+" ("+p.code+")";$("operation").innerHTML=matrixData.operations.map(o=>'<option value="'+esc(o.code)+'">'+esc(o.name)+'</option>').join("");$("form").reset();$("platformName").value=p.name+" ("+p.code+")";$("dialog").showModal()}
+$("matrix").addEventListener("click",e=>{const b=e.target.closest("[data-record]");if(b)openRecord(b.dataset.record)});
+$("form").addEventListener("submit",async e=>{e.preventDefault();try{await api("/api/v1/platform-capabilities/"+selectedPlatform+"/verification",{method:"POST",body:JSON.stringify({operation:$("operation").value,status:$("status").value,evidence:$("evidence").value,engine_version:$("engineVersion").value,environment:$("environment").value,notes:$("notes").value})});$("dialog").close();toast("验证记录已保存");await load()}catch(err){toast(err.message)}});
+$("close").onclick=$("cancel").onclick=()=>$("dialog").close();$("reload").onclick=load;load();
+</script></body></html>
