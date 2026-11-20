@@ -323,3 +323,44 @@ def test_verification_execution_failure_is_persisted(tmp_path, monkeypatch):
     with db.connect() as conn:
         status = conn.execute("SELECT status FROM keyword_verification_batches").fetchone()["status"]
     assert status == "failed"
+
+
+
+def test_verification_sample_limit_is_bounded_to_10_30(tmp_path, monkeypatch):
+    import pytest
+    from app.storage import db
+    from app.services import discovery
+    from app.services.collection_library import create_project
+    from app.services.keywords import start_verification_batch
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "verification-sample-limit.sqlite3")
+    discovery._ensure()
+    project_id = create_project("试搜样本边界项目")["id"]
+    now = datetime.now(UTC).isoformat()
+    with db.connect() as conn:
+        conn.execute("""INSERT INTO keyword_candidates
+            (project_id,keyword,normalized_keyword,category,source_type,source_text,
+             generation_reason,status,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (project_id, "批量整理工具", "批量整理工具", "场景表达", "comment",
+             "需要批量整理工具", "来源明确", "pending", now, now))
+        candidate_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    for invalid_limit in (9, 31):
+        with pytest.raises(ValueError, match="10 到 30"):
+            start_verification_batch(project_id, "bilibili", [candidate_id], invalid_limit)
+
+    submitted = {}
+    monkeypatch.setattr(discovery, "execute_discovery_batch",
+                        lambda run_id, platforms, **kwargs: submitted.update(
+                            run_id=run_id, platforms=platforms, **kwargs) or {"status": "queued"})
+    batch = start_verification_batch(project_id, "bilibili", [candidate_id], 10)
+
+    assert batch["status"] == "queued"
+    assert batch["requested_limit"] == 10
+    assert submitted["max_posts"] == 10
+    with db.connect() as conn:
+        saved = conn.execute(
+            "SELECT requested_limit FROM keyword_verification_batches WHERE id=?",
+            (batch["batch_id"],)).fetchone()
+    assert saved["requested_limit"] == 10
