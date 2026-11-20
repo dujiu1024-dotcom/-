@@ -34,3 +34,27 @@ def test_collection_library_crud_and_comment_pagination(tmp_path, monkeypatch):
     deleted = client.delete(f"/api/v1/collection/projects/{project_id}")
     assert deleted.status_code == 200
     assert client.get("/api/v1/collection/projects").json()["items"] == []
+
+
+def test_comments_api_returns_pages(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from app.models import CommentRecord
+    from app.storage import db
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "comments-page.sqlite3")
+    now = datetime.now(UTC)
+    for index in range(3):
+        db.upsert_comment(CommentRecord(
+            platform="bilibili", comment_id=f"c{index}",
+            comment_text=f"评论内容 {index}", comment_created_at=now,
+        ))
+
+    client = TestClient(app)
+    first = client.get("/api/v1/comments?since_hours=72&limit=2&offset=0").json()
+    second = client.get("/api/v1/comments?since_hours=72&limit=2&offset=2").json()
+    assert first["total"] == 3
+    assert first["count"] == 2
+    assert len(first["items"]) == 2
+    assert second["count"] == 1
+    assert len(second["items"]) == 1
