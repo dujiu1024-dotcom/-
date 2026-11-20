@@ -1,4 +1,3 @@
-from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from app.collectors.registry import list_platforms
 from app.collectors.mediacrawler_import import read_export, normalize_row
