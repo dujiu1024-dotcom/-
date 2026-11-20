@@ -352,8 +352,10 @@ def execute_discovery_batch(run_id, platforms=None, max_tasks=100):
         execution = {"batch": True, "tasks": tasks, "cursor": 0, "completed": 0, "failed": 0,
                  "created_at": _now()}
     with connect() as conn:
-        conn.execute("UPDATE discovery_runs SET status='queued', execution_json=?, notes=? WHERE id=?",
-                     (json.dumps(execution, ensure_ascii=False), "批量任务已持久化，等待后台调度器执行。", run_id))
+        cur = conn.execute("UPDATE discovery_runs SET status='queued', execution_json=?, notes=? WHERE id=? AND status='prepared'",
+                           (json.dumps(execution, ensure_ascii=False), "批量任务已持久化，等待全局租约持有者调度。", run_id))
+        if cur.rowcount != 1:
+            raise ValueError("该发现批次已被其他请求提交，请刷新批次状态")
         conn.execute("DELETE FROM discovery_run_tasks WHERE run_id=?", (run_id,))
         for index, task in enumerate(tasks):
             conn.execute("""INSERT INTO discovery_run_tasks
@@ -465,13 +467,19 @@ def resume_discovery_batch(run_id):
         cursor = execution.get("cursor", 0)
         if cursor >= len(execution.get("tasks", [])):
             raise ValueError("批次没有待恢复的子任务")
+        # Clear the previous process-local job reference so the queued worker can start
+        # a fresh job only after the user confirms the old process has exited.
+        execution.pop("job_id", None)
+        execution.pop("started_at", None)
+        execution.pop("started_epoch", None)
         task = conn.execute("SELECT * FROM discovery_run_tasks WHERE run_id=? AND task_index=?",
                             (run_id, cursor)).fetchone()
         if task and task["status"] == "interrupted":
             conn.execute("UPDATE discovery_run_tasks SET status='queued', job_id=NULL, pid=NULL, error='' WHERE id=?",
                          (task["id"],))
-        conn.execute("UPDATE discovery_runs SET status='queued', notes=? WHERE id=?",
-                     ("用户确认旧任务已停止，等待后台调度器恢复当前子任务。", run_id))
+        conn.execute("UPDATE discovery_runs SET status='queued', execution_json=?, notes=? WHERE id=? AND status='paused'",
+                     (json.dumps(execution, ensure_ascii=False),
+                      "用户确认旧任务已停止，等待全局租约持有者恢复当前子任务。", run_id))
     return {"id": run_id, "status": "queued",
             "current_task": execution["tasks"][cursor],
             "notes": "已确认旧任务退出；当前子任务重新排队，由全局 worker 租约持有者执行。"}
