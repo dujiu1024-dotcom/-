@@ -63,6 +63,13 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `POST /api/v1/analysis/run`
 - `GET /api/v1/demands`
 - `GET /api/v1/analytics/trends?since_hours=720&bucket=day`
+- `POST /api/v1/sources/discover` / `GET /api/v1/sources/candidates`：来源候选发现与审核
+- `GET /api/v1/sources` / `PATCH /api/v1/sources/{id}`：追踪来源管理
+- `GET /api/v1/sources/schedules` / `GET /api/v1/sources/runs`：定时计划与批次
+- `GET/PUT /api/v1/sources/{id}/checkpoint`：增量游标 / 回扫水位
+- `POST /api/v1/scheduler/tick`：手动触发一次到期任务检查
+
+来源发现与增量追踪的算法、平台能力边界及已知风险见 [来源追踪设计](docs/SOURCE_TRACKING.md)。
 - `GET /api/v1/collectors/reverse/status` / `POST /api/v1/collectors/reverse/install`
 - `POST /api/v1/collectors/reverse/collect`
 - `GET /docs`
