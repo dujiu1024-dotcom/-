@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.services.discovery import (
-    execute_discovery_batch, execute_discovery_run, refresh_discovery_run,
+    execute_discovery_batch, execute_discovery_run, refresh_discovery_run, resume_discovery_batch,
     approve_discovered_source, create_discovery_run, create_strategy,
     ingest_discovered, list_discovered, list_strategies,
 )
@@ -83,6 +83,17 @@ def discovery_run_execute_batch(run_id: str, payload: BatchExecuteRequest):
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not result:
+        raise HTTPException(404, "发现批次不存在")
+    return result
+
+
+@router.post("/runs/{run_id}/resume")
+def discovery_run_resume(run_id: str):
+    try:
+        result = resume_discovery_batch(run_id)
+    except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     if not result:
         raise HTTPException(404, "发现批次不存在")
