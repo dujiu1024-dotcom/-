@@ -63,3 +63,61 @@ def test_discovery_rejects_approval_without_author_url(tmp_path, monkeypatch):
     content = client.get("/api/v1/discovery/results").json()["items"][0]
     response = client.post(f"/api/v1/discovery/results/{content['id']}/approve")
     assert response.status_code == 422
+
+
+def test_discovery_executes_platform_search_and_imports_posts(tmp_path, monkeypatch):
+    import json
+    import time
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-exec.sqlite3")
+    export_root = tmp_path / "exports"
+    monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
+    job = {"id": "job-123", "status": "running", "platform": "bilibili"}
+    monkeypatch.setattr(discovery, "start_job", lambda payload: job)
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "执行测试"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "B站搜索", "topic": "测试", "terms": ["AI 工具"], "platforms": ["bilibili"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+
+    started = client.post(f"/api/v1/discovery/runs/{run['id']}/execute?platform=bilibili")
+    assert started.status_code == 200
+    assert started.json()["status"] == "running"
+    assert job["id"] == started.json()["job_id"]
+
+    folder = export_root / "exports" / "bilibili"
+    folder.mkdir(parents=True)
+    export = folder / "contents.jsonl"
+    export.write_text(json.dumps({
+        "bvid": "BV123", "title": "AI 工具真实体验", "desc": "寻找自动化工具",
+        "mid": "9988", "name": "效率观察员"
+    }, ensure_ascii=False) + "\\n", encoding="utf-8")
+    now = time.time()
+    import os
+    os.utime(export, (now, now))
+    job["status"] = "succeeded"
+    monkeypatch.setattr(discovery, "get_job", lambda job_id: {**job, "status": "succeeded"})
+    refreshed = client.get(f"/api/v1/discovery/runs/{run['id']}")
+    assert refreshed.status_code == 200
+    assert refreshed.json()["status"] == "succeeded"
+    assert refreshed.json()["result_count"] == 1
+    results = client.get("/api/v1/discovery/results").json()
+    assert results["items"][0]["title"] == "AI 工具真实体验"
+
+
+def test_discovery_execution_rejects_unavailable_platform(tmp_path, monkeypatch):
+    from app.storage import db
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-platform.sqlite3")
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "平台边界"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "海外平台", "topic": "测试", "terms": ["test"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+    response = client.post(f"/api/v1/discovery/runs/{run['id']}/execute?platform=youtube")
+    assert response.status_code == 409
+    assert "暂未接入原生搜索执行" in response.json()["detail"]
