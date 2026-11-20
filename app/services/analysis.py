@@ -91,6 +91,7 @@ def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
                 CommentFilters(since_hours=hours),
                 batch_size=250,
                 limit=min(250, sample_limit - batch_start),
+                offset=batch_start,
             ))
             if not batch:
                 break
