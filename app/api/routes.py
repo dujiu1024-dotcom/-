@@ -63,7 +63,7 @@ def collection_project_create(payload: CollectionProjectRequest):
 def collection_project_update(project_id: str, payload: dict):
     if "name" in payload and (not str(payload["name"]).strip() or len(str(payload["name"])) > 100):
         raise HTTPException(422, "项目名称不能为空且不超过 100 字")
-    return update_project(project_id, payload.get("name"), payload.get("description")) or HTTPException(404, "采集项目不存在")
+    result = update_project(project_id, payload.get("name"), payload.get("description"))\n    if not result:\n        raise HTTPException(404, "采集项目不存在")\n    return result
 
 
 @router.delete("/collection/projects/{project_id}")
