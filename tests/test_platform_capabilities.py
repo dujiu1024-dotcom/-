@@ -40,7 +40,8 @@ def test_platform_capability_adapter_support_is_not_claimed_as_verified(tmp_path
     operations = detail.json()["operations"]
     assert operations["search_content"]["adapter_available"] is True
     assert operations["search_content"]["adapter_status"] == "available"
-    assert operations["search_content"]["verification_status"] == "not_tested"
+    assert operations["search_content"]["verification_status"] == "skipped"
+    assert "跳过真机验证" in operations["search_content"]["evidence"]
     tieba = client.get("/api/v1/platform-capabilities/tieba").json()["operations"]
     assert tieba["creator_posts"]["adapter_available"] is False
 
