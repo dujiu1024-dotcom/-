@@ -2,9 +2,12 @@ import json
 import shutil
 import subprocess
 import sys
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import REVERSE_ROOT, REVERSE_URL
+from app.storage.db import finish_collection_task, start_collection_task
 
 COMMANDS = {
     "toutiao": {"search": ("toutiao", "search"), "comments": ("toutiao", "comments"), "detail": ("toutiao", "article")},
@@ -49,9 +52,14 @@ def collect(platform: str, mode: str, query: str, limit: int = 50) -> dict[str, 
         raise RuntimeError("可选采集引擎 reverse CLI 未安装")
     group, command = COMMANDS[platform][mode]
     args = [binary, group, command, query, "--limit", str(max(1, min(limit, 200)))]
+    task_id = uuid.uuid4().hex[:12]
+    started_at = datetime.now(UTC).isoformat()
+    start_collection_task(task_id, platform, mode, started_at)
     try:
-        result = subprocess.run(args, cwd=REVERSE_ROOT if REVERSE_ROOT.exists() else None,
-                                capture_output=True, text=True, timeout=180, check=False)
+        result = subprocess.run(
+            args, cwd=REVERSE_ROOT if REVERSE_ROOT.exists() else None,
+            capture_output=True, text=True, timeout=180, check=False,
+        )
     except (subprocess.TimeoutExpired, OSError) as exc:
         finish_collection_task(
             task_id, status="failed",
@@ -60,7 +68,18 @@ def collect(platform: str, mode: str, query: str, limit: int = 50) -> dict[str, 
         )
         raise RuntimeError(f"reverse CLI 执行失败：{exc}") from exc
     if result.returncode:
-        raise RuntimeError((result.stderr or result.stdout or "reverse CLI 执行失败")[-3000:])
+        error_text = (result.stderr or result.stdout or "reverse CLI 执行失败")[-3000:]
+        lowered = error_text.lower()
+        blocked = any(
+            marker in lowered
+            for marker in ("captcha", "验证码", "403", "429", "rate limit", "登录失效")
+        )
+        finish_collection_task(
+            task_id, status="blocked" if blocked else "failed",
+            error_code="platform_blocked" if blocked else f"exit_{result.returncode}",
+            finished_at=datetime.now(UTC).isoformat(),
+        )
+        raise RuntimeError(error_text)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -82,5 +101,20 @@ def collect(platform: str, mode: str, query: str, limit: int = 50) -> dict[str, 
             if record:
                 upsert_comment(record)
                 imported += 1
-    return {"platform": platform, "mode": mode, "items": payload,
-            "imported_comments": imported, "engine": "reverse CLI"}
+    if isinstance(payload, list):
+        result_count = len(payload)
+    elif isinstance(payload, dict):
+        result_count = next(
+            (len(payload[key]) for key in ("items", "results", "comments", "data")
+             if isinstance(payload.get(key), list)), imported,
+        )
+    else:
+        result_count = imported
+    finish_collection_task(
+        task_id, status="succeeded", result_count=result_count,
+        finished_at=datetime.now(UTC).isoformat(),
+    )
+    return {
+        "platform": platform, "mode": mode, "items": payload,
+        "imported_comments": imported, "engine": "reverse CLI",
+    }
