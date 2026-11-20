@@ -115,6 +115,7 @@ def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
                     item = by_id.get(f"{row['platform']}::{row['comment_id']}")
                     if item and item.get("is_demand"):
                         analyses.append({**row, **item})
+        vectors = embed_texts([item["semantic_text"] for item in analyses]) if provider["embedding_model"] else None
         groups = _clusters(analyses, vectors)
         clusters, saved = [], []
         for group in groups:
