@@ -27,7 +27,7 @@ python -m app.cli install-engine
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-浏览器打开 http://127.0.0.1:8000 。也可以在工作台点击“安装 / 检查 MediaCrawler”。安装过程会从上游仓库克隆源码并安装其 requirements。
+浏览器打开 http://127.0.0.1:8000 。也可以在工作台点击“安装 / 检查 MediaCrawler”。安装过程会从上游仓库克隆源码、安装其 requirements，并安装 Playwright Chromium 浏览器运行时。
 
 ## 第一次登录
 
