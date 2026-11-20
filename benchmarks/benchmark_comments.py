@@ -10,7 +10,7 @@ import time
 import tracemalloc
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 from app.storage import db
 
