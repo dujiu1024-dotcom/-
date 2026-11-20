@@ -1,0 +1,23 @@
+name: Performance benchmark
+
+on:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - name: Run 10k / 100k / 500k synthetic benchmarks
+        run: python -m benchmarks.benchmark_comments --sizes 10000 100000 500000 --repetitions 5 --output benchmark-results.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: comment-performance-benchmark
+          path: benchmark-results.json
+          if-no-files-found: error
