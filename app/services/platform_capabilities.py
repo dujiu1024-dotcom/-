@@ -40,7 +40,20 @@ def _adapter_support(platform: str, operation: str) -> tuple[bool, str]:
     return True, "代码入口已登记；实际可用性仍需本机授权环境验证"
 
 
+
+def _ensure_verification_schema() -> None:
+    with connect() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS platform_verification_runs (
+            id TEXT PRIMARY KEY, platform TEXT NOT NULL, operation TEXT NOT NULL,
+            status TEXT NOT NULL, tested_at TEXT NOT NULL, engine TEXT NOT NULL,
+            engine_version TEXT NOT NULL DEFAULT '', environment TEXT NOT NULL DEFAULT '',
+            evidence TEXT NOT NULL, notes TEXT NOT NULL DEFAULT ''
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_platform_verification_latest ON platform_verification_runs(platform,operation,tested_at)")
+
+
 def _latest_records() -> dict[tuple[str, str], dict[str, Any]]:
+    _ensure_verification_schema()
     with connect() as conn:
         rows = conn.execute(
             """SELECT v.* FROM platform_verification_runs v
@@ -112,6 +125,7 @@ def record_platform_verification(
         raise ValueError("status 必须为 passed/partial/failed/unavailable/skipped")
     if not evidence.strip():
         raise ValueError("必须提供可追溯的验证证据或跳过原因")
+    _ensure_verification_schema()
     record = {
         "id": uuid.uuid4().hex,
         "platform": platform,
