@@ -8,7 +8,7 @@
 
 ## 登录与浏览器隔离
 
-MediaCrawler 上游提供 `SAVE_LOGIN_STATE` 与 `USER_DATA_DIR = "%s_user_data_dir"`，并在各平台浏览器实现中按平台代码建立持久化目录。CDP 模式另使用 `cdp_` 前缀目录。本项目不读取日常 Chrome 默认用户目录。
+MediaCrawler 上游提供 `SAVE_LOGIN_STATE` 与 `USER_DATA_DIR = "%s_user_data_dir"`，并在各平台浏览器实现中按平台代码建立持久化目录。CDP 模式另使用 `cdp_` 前缀目录。本项目安装时会将上游 `ENABLE_CDP_MODE` 关闭，并确保 `SAVE_LOGIN_STATE=True`，避免 CDP 连接到日常运行中的共享浏览器；采集器使用上游的持久化上下文，并按平台代码建立独立 profile。本项目不读取日常 Chrome 默认用户目录。
 
 - 首次运行使用可见浏览器，用户自行扫码和完成人机验证。
 - 不提交 Cookie、浏览器配置和用户数据目录。
