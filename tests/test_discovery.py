@@ -364,6 +364,7 @@ def test_rate_limit_retry_persists_attempt_and_platform_cooldown(tmp_path, monke
     monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
     monkeypatch.setattr(discovery, "_worker_id", "test-worker")
     monkeypatch.setattr(discovery, "_claim_worker_lease", lambda owner_id, **kwargs: owner_id != "test-worker")
+    monkeypatch.setattr(discovery, "_renew_worker_lease", lambda owner_id, **kwargs: owner_id != "test-worker")
     job = {"id": "rate-job", "pid": 321, "status": "running"}
     monkeypatch.setattr(discovery, "start_job", lambda payload: job)
     client = TestClient(app)
