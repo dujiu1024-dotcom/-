@@ -138,6 +138,7 @@ def benchmark_dataset(size: int, database_path: Path, repetitions: int = DEFAULT
     finally:
         db.DATABASE_PATH = original_database_path
 
+
 def evaluate_regression(results: list[dict]) -> dict:
     if not results:
         raise ValueError("at least one benchmark result is required")
