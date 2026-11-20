@@ -182,3 +182,52 @@ def test_discovery_batch_limits_task_count_and_platform_scope(tmp_path, monkeypa
     response = client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch",
                            json={"platforms": ["zhihu"]})
     assert response.status_code == 409
+
+
+def test_discovery_batch_persists_tasks_and_can_resume_after_restart(tmp_path, monkeypatch):
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-resume.sqlite3")
+    monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
+    jobs = {}
+    count = {"n": 0}
+
+    def start_job(payload):
+        count["n"] += 1
+        job = {"id": f"persisted-{count['n']}", "status": "running",
+               "platform": payload["platform"], "pid": 4321}
+        jobs[job["id"]] = job
+        return job
+
+    monkeypatch.setattr(discovery, "start_job", start_job)
+    monkeypatch.setattr(discovery, "get_job", lambda job_id: jobs.get(job_id))
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "恢复测试"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "持久化策略", "topic": "测试", "terms": ["词一", "词二"],
+        "platforms": ["bilibili"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+    run_id = run["id"]
+
+    started = client.post(f"/api/v1/discovery/runs/{run_id}/execute-batch", json={}).json()
+    assert started["status"] == "running"
+    with db.connect() as conn:
+        tasks = conn.execute("SELECT status,job_id FROM discovery_run_tasks WHERE run_id=? ORDER BY task_index",
+                             (run_id,)).fetchall()
+    assert [row["status"] for row in tasks] == ["running", "queued"]
+    assert tasks[0]["job_id"] == "persisted-1"
+
+    # Simulate a service restart: the in-memory process registry no longer knows the job.
+    del jobs["persisted-1"]
+    paused = client.get(f"/api/v1/discovery/runs/{run_id}").json()
+    assert paused["status"] == "paused"
+    with db.connect() as conn:
+        task = conn.execute("SELECT status FROM discovery_run_tasks WHERE run_id=? AND task_index=0",
+                            (run_id,)).fetchone()
+    assert task["status"] == "interrupted"
+
+    resumed = client.post(f"/api/v1/discovery/runs/{run_id}/resume").json()
+    assert resumed["status"] == "running"
+    assert resumed["job_id"] == "persisted-2"
