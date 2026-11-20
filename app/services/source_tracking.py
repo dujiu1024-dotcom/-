@@ -31,7 +31,17 @@ def _schema(conn) -> None:
         window_hours INTEGER NOT NULL DEFAULT 72, tracking_scope TEXT NOT NULL DEFAULT 'creator',
         candidate_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         last_success_at TEXT, last_content_id TEXT, cursor_json TEXT NOT NULL DEFAULT '{}',
+        tracking_target TEXT NOT NULL DEFAULT '', tracking_verified INTEGER NOT NULL DEFAULT 0,
         UNIQUE(platform, source_type, source_key)
+    );
+    CREATE TABLE IF NOT EXISTS source_schedules (
+        source_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, next_run_at TEXT NOT NULL,
+        last_run_at TEXT, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS source_runs (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL, job_id TEXT, status TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, window_start TEXT,
+        window_end TEXT, attempt INTEGER NOT NULL DEFAULT 1, error TEXT
     );
     CREATE TABLE IF NOT EXISTS source_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT, candidate_id TEXT,
@@ -39,6 +49,11 @@ def _schema(conn) -> None:
         detail_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
     );
     """)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(tracked_sources)")}
+    if "tracking_target" not in columns:
+        conn.execute("ALTER TABLE tracked_sources ADD COLUMN tracking_target TEXT NOT NULL DEFAULT ''")
+    if "tracking_verified" not in columns:
+        conn.execute("ALTER TABLE tracked_sources ADD COLUMN tracking_verified INTEGER NOT NULL DEFAULT 0")
 
 
 def discover_candidates(limit: int = 500) -> dict[str, Any]:
@@ -177,7 +192,7 @@ def review_candidate(candidate_id: str, action: str, group_name: str = "",
 
 
 def update_source(source_id: str, **changes: Any) -> dict[str, Any]:
-    allowed = {"group_name", "enabled", "priority", "interval_minutes", "window_hours", "tracking_scope"}
+    allowed = {"group_name", "enabled", "priority", "interval_minutes", "window_hours", "tracking_scope", "tracking_target", "tracking_verified"}
     if not changes or set(changes) - allowed:
         raise ValueError("不支持的来源配置字段")
     if "priority" in changes and not 1 <= int(changes["priority"]) <= 10:
@@ -221,3 +236,80 @@ def merge_sources(source_ids: list[str], target_id: str) -> dict[str, Any]:
             conn.execute("INSERT INTO source_audit(source_id,action,detail_json,created_at) VALUES(?,?,?,?)",
                          (source_id, "merged", json.dumps({"target_id": target_id}), now))
         return {"target_id": target_id, "merged_source_ids": [x for x in unique_ids if x != target_id]}
+
+
+def configure_schedule(source_id: str, enabled: bool | None = None) -> dict[str, Any]:
+    with connect() as conn:
+        _schema(conn)
+        source = conn.execute("SELECT * FROM tracked_sources WHERE id=?", (source_id,)).fetchone()
+        if not source:
+            raise KeyError(source_id)
+        is_enabled = int(source["enabled"] if enabled is None else bool(enabled))
+        now = _now()
+        interval = int(source["interval_minutes"])
+        next_run = datetime.fromtimestamp(datetime.now(UTC).timestamp() + interval * 60, UTC).isoformat()
+        conn.execute("""
+            INSERT INTO source_schedules(source_id,enabled,next_run_at,updated_at) VALUES(?,?,?,?)
+            ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled,
+                next_run_at=CASE WHEN excluded.enabled=0 THEN source_schedules.next_run_at
+                                 ELSE excluded.next_run_at END, updated_at=excluded.updated_at
+        """, (source_id, is_enabled, next_run, now))
+        return dict(conn.execute("SELECT * FROM source_schedules WHERE source_id=?",
+                                 (source_id,)).fetchone())
+
+
+def list_schedules() -> list[dict[str, Any]]:
+    with connect() as conn:
+        _schema(conn)
+        return [dict(row) for row in conn.execute("""
+            SELECT sc.*,s.platform,s.source_type,s.source_key,s.group_name,s.priority,
+                   s.interval_minutes,s.window_hours,s.enabled AS source_enabled,
+                   s.tracking_verified,s.tracking_target
+            FROM source_schedules sc JOIN tracked_sources s ON s.id=sc.source_id
+            ORDER BY s.priority DESC,sc.next_run_at ASC
+        """).fetchall()]
+
+
+def list_source_runs(source_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    with connect() as conn:
+        _schema(conn)
+        if source_id:
+            rows = conn.execute("SELECT * FROM source_runs WHERE source_id=? ORDER BY scheduled_at DESC LIMIT ?",
+                                (source_id, max(1, min(limit, 500)))).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM source_runs ORDER BY scheduled_at DESC LIMIT ?",
+                                (max(1, min(limit, 500)),)).fetchall()
+        return [dict(row) for row in rows]
+
+
+def save_checkpoint(source_id: str, cursor: dict[str, Any] | None = None,
+                    last_content_id: str | None = None,
+                    window_start: str | None = None, window_end: str | None = None) -> dict[str, Any]:
+    checkpoint = {"cursor": cursor or {}, "window_start": window_start,
+                  "window_end": window_end, "mode": "cursor" if cursor else "overlap_window"}
+    with connect() as conn:
+        _schema(conn)
+        row = conn.execute("SELECT id FROM tracked_sources WHERE id=?", (source_id,)).fetchone()
+        if not row:
+            raise KeyError(source_id)
+        now = _now()
+        conn.execute("""UPDATE tracked_sources SET cursor_json=?,
+            last_content_id=COALESCE(?,last_content_id),last_success_at=?,updated_at=? WHERE id=?""",
+            (json.dumps(checkpoint, ensure_ascii=False), last_content_id, now, now, source_id))
+        return {"source_id": source_id, "last_success_at": now, "last_content_id": last_content_id,
+                **checkpoint}
+
+
+def get_checkpoint(source_id: str) -> dict[str, Any]:
+    with connect() as conn:
+        _schema(conn)
+        row = conn.execute("SELECT last_success_at,last_content_id,cursor_json FROM tracked_sources WHERE id=?",
+                           (source_id,)).fetchone()
+        if not row:
+            raise KeyError(source_id)
+        try:
+            state = json.loads(row["cursor_json"] or "{}")
+        except json.JSONDecodeError:
+            state = {}
+        return {"source_id": source_id, "last_success_at": row["last_success_at"],
+                "last_content_id": row["last_content_id"], **state}
