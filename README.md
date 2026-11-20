@@ -6,10 +6,13 @@
 
 - 本地 Web 工作台：账号会话目录、引擎状态、采集任务、运行日志、结果导入。
 - MediaCrawler 运行适配器：首次安装上游代码与依赖，按平台启动可见浏览器。
-- 平台：小红书、抖音、快手、B站、微博、贴吧、知乎（均待本机真实环境验证）。
+- 国内平台：小红书、抖音、快手、B站、微博、贴吧、知乎；扩展平台：今日头条、微信公众号文章、微信视频号、YouTube、Reddit、TikTok、X、Instagram、Threads、LinkedIn、Telegram、Quora，以及 Facebook / Pinterest 公共广告库。未实测连接器均明确标记状态。
 - 任务方式：关键词搜索、指定内容链接 / ID、博主主页。
 - 一级评论和可选二级回复，JSONL 导出，自动导入统一 SQLite。
-- 评论时间与原帖时间分离，严格按评论自身时间筛选最近 72 小时。
+- 评论时间与原帖时间分离，默认 72 小时窗口可在工作台配置（1–8760 小时）。
+- 可选 Social Media Research CLI（MIT）扩展引擎，支持只读采集命令；采集结果尽可能归一化入库。
+- 需求分析：OpenAI-compatible LLM 语义识别、需求分类、相似需求聚类；可选 Embeddings 向量聚类，无模型配置时本地规则降级。
+- 需求强度 0–100 排序、跨平台证据汇总、小时 / 天趋势分析。
 - 账号数据、浏览器资料、导出文件、日志全部留在本机，不提交 Git。
 
 ## 一次性安装
@@ -27,7 +30,7 @@ python -m app.cli install-engine
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-浏览器打开 http://127.0.0.1:8000 。也可以在工作台点击“安装 / 检查 MediaCrawler”。安装过程会从上游仓库克隆源码、安装其 requirements，并安装 Playwright Chromium 浏览器运行时。
+浏览器打开 http://127.0.0.1:8000 。也可以在工作台点击“安装 / 检查 MediaCrawler”。安装过程会从上游仓库克隆源码、安装其 requirements，并安装 Playwright Chromium 浏览器运行时。扩展平台可在工作台单独安装 Social Media Research CLI（需要额外 Python 依赖）。
 
 ## 第一次登录
 
@@ -41,7 +44,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 ## 数据口径
 
-最近 72 小时按评论自己的发布时间计算，不使用原帖发布时间替代。时间缺失、无法解析或时区不明确的评论不会进入 72 小时结果。评论按平台和评论 ID 去重。
+默认按可配置时间窗口（初始 72 小时）筛选评论自己的发布时间，不使用原帖发布时间替代。时间缺失、无法解析或时区不明确的评论不会进入窗口结果。评论按平台和评论 ID 去重。
 
 ## API
 
@@ -55,8 +58,13 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `GET /api/v1/crawler/jobs/{id}/log`
 - `DELETE /api/v1/crawler/jobs/{id}`
 - `POST /api/v1/imports/exports`
-- `GET /api/v1/comments?since_hours=72`
-- `GET /api/v1/demands?since_hours=72`
+- `GET /api/v1/settings` / `PUT /api/v1/settings/time-window`
+- `GET /api/v1/comments?since_hours=72`（省略时使用配置窗口）
+- `POST /api/v1/analysis/run`
+- `GET /api/v1/demands`
+- `GET /api/v1/analytics/trends?since_hours=720&bucket=day`
+- `GET /api/v1/collectors/reverse/status` / `POST /api/v1/collectors/reverse/install`
+- `POST /api/v1/collectors/reverse/collect`
 - `GET /docs`
 
 ## 开源项目参考与许可
@@ -64,11 +72,16 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - [MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)：作为采集引擎独立安装。其仓库声明采用 NON-COMMERCIAL LEARNING LICENSE 1.1；个人非商业研究前请阅读并遵守完整许可。
 - [media-crawler-easy](https://github.com/isheng-eqi/media-crawler-easy)：参考环境引导、扫码登录和结果校验，不复制其代码。
 - [CreatorHub](https://github.com/3441293738/creatorhub)：仅参考工作台交互；未确认其许可，不复制代码。
+- [Social Media Research CLI](https://github.com/ifccod/social-media-research-cli)：MIT，可选扩展引擎；只开放只读命令，不调用发帖、点赞、关注等操作。
+- [OpenMediaCrawl](https://github.com/Tommyapi/OpenMediaCrawl)：MIT，备选 Node.js 采集引擎，当前列入平台能力评估，尚未接入主任务调度。
+- [NewsCrawler](https://github.com/NanmiCoder/NewsCrawler)：GPL-3.0，适合微信公众号 / 今日头条等文章正文提取；不将正文提取误报为评论采集。
 
 ## 明确未完成 / 实测边界
 
 - GitHub CI 不能验证真实平台账号登录、扫码、验证码、风控或评论分页。
-- 今日头条、微信公众号尚无可用采集连接器。
-- 当前需求识别仍为规则基线；LLM 语义识别、聚类、需求强度评分和趋势看板尚未完成。
+- 国内七个平台仍需本机真实登录与评论分页验证；扩展平台 CLI 适配器需要逐个平台验证命令参数、字段映射和时间戳。
+- 微信公众号当前登记文章、账号和搜索能力；不能保证可抓取文章评论，需尊重公众号评论接口可访问性。
+- LLM 语义分析需在本机 `.env` 配置 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`；向量聚类另需 `LLM_EMBEDDING_MODEL`。不配置时为本地规则 / n-gram 降级，不等同于真正的 LLM 语义分析。
+- 趋势基于已分析的评论证据；需要定期运行分析才能累积时间序列。
 - 本版本一次只允许一个采集任务，避免无控制并发。
 - 请遵守平台条款，低频采集，仅采集本人有权访问的公开内容。
