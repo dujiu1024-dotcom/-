@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "social-demand-radar"
-version = "0.1.0"
+version = "0.2.0"
 description = "Personal multi-platform social comment demand research tool"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,8 +17,14 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "httpx>=0.27,<1", "ruff>=0.6,<1"]
 
+[project.scripts]
+demand-radar = "app.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
