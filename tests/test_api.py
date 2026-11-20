@@ -8,7 +8,7 @@ def test_health_and_platforms():
     assert client.get("/health").json()["status"] == "ok"
     platforms = client.get("/api/v1/platforms").json()
     codes = {item["code"] for item in platforms}
-    assert {"xhs", "douyin", "kuaishou", "weibo", "bilibili", "toutiao", "wechat"} <= codes
+    assert {"xhs", "douyin", "kuaishou", "weibo", "bilibili", "toutiao", "wechat_mp"} <= codes
 
 def test_dashboard_and_engine_status():
     client = TestClient(app)
