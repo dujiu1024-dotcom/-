@@ -50,6 +50,25 @@ def _ensure_verification_schema() -> None:
             evidence TEXT NOT NULL, notes TEXT NOT NULL DEFAULT ''
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_platform_verification_latest ON platform_verification_runs(platform,operation,tested_at)")
+        skipped_at = datetime.now(UTC).isoformat()
+        for platform in SEVEN_PLATFORMS:
+            for operation in OPERATIONS:
+                conn.execute(
+                    """INSERT INTO platform_verification_runs
+                       (id,platform,operation,status,tested_at,engine,engine_version,environment,evidence,notes)
+                       SELECT ?,?,?, 'skipped', ?, ?, '', 'dispatch-no-live-test', ?, ?
+                       WHERE NOT EXISTS (
+                         SELECT 1 FROM platform_verification_runs
+                         WHERE platform=? AND operation=?
+                       )""",
+                    (
+                        f"dispatch-skip-{platform}-{operation}", platform, operation,
+                        skipped_at, PLATFORMS[platform]["engine"],
+                        "本次调度明确跳过真机验证；未向真实平台发起请求。该记录不代表能力通过。",
+                        "后续需在用户授权的本机环境逐项实测。",
+                        platform, operation,
+                    ),
+                )
 
 
 def _latest_records() -> dict[tuple[str, str], dict[str, Any]]:
