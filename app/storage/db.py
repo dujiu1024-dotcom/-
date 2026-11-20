@@ -1,7 +1,7 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
+
 from app.config import DATABASE_PATH
 from app.models import CommentRecord
 
@@ -61,7 +61,7 @@ def upsert_comment(record: CommentRecord) -> bool:
             content_dt.isoformat() if content_dt else None,
             record.parent_comment_id, record.author_key, record.like_count,
             json.dumps(record.raw, ensure_ascii=False, default=str),
-            datetime.now(timezone.utc).isoformat()
+            datetime.now(UTC).isoformat()
         ))
         return cur.rowcount > 0
 
@@ -80,7 +80,7 @@ def list_comments(since_hours: int | None = None, platform: str | None = None,
     with connect() as conn:
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
     if since_hours is not None:
-        cutoff_dt = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - since_hours * 3600, timezone.utc)
+        cutoff_dt = datetime.fromtimestamp(datetime.now(UTC).timestamp() - since_hours * 3600, UTC)
         filtered = []
         for row in rows:
             value = row["comment_created_at"]
@@ -92,7 +92,7 @@ def list_comments(since_hours: int | None = None, platform: str | None = None,
                 dt = datetime.fromisoformat(value)
                 if dt.tzinfo is None:
                     continue
-                if dt.astimezone(timezone.utc) >= cutoff_dt:
+                if dt.astimezone(UTC) >= cutoff_dt:
                     filtered.append(row)
             except ValueError:
                 if include_unknown_time:
