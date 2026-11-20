@@ -7,6 +7,7 @@ from app.collectors.reverse_cli import collect as collect_external, install_reve
 from app.config import IMPORT_ROOT
 from app.models import ImportRequest
 from app.services.analysis import get_clusters, get_trends, run_analysis
+from app.services.evaluation import evaluate_analysis
 from app.services.crawler_engine import (
     engine_status, get_job, import_latest_exports, install_engine, read_job_log,
     session_status, start_job, stop_job, list_jobs,
@@ -27,6 +28,14 @@ class AnalysisRequest(BaseModel):
     since_hours: int | None = Field(default=None, ge=1, le=8760)
     limit: int = Field(default=500, ge=1, le=3000)
 
+
+
+class AnalysisEvaluationRequest(BaseModel):
+    model_version: str | None = Field(default=None, min_length=1, max_length=200)
+    prompt_version: str | None = Field(default=None, min_length=1, max_length=200)
+    platform: str | None = Field(default=None, min_length=1, max_length=50)
+    since_hours: int | None = Field(default=None, ge=1, le=8760)
+    limit: int = Field(default=5000, ge=1, le=20000)
 
 
 class FeedbackRequest(BaseModel):
@@ -249,6 +258,20 @@ def analysis_run(payload: AnalysisRequest):
         return run_analysis(payload.since_hours, payload.limit)
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@router.post("/analysis/evaluate")
+def analysis_evaluate(payload: AnalysisEvaluationRequest):
+    try:
+        return evaluate_analysis(
+            model_version=payload.model_version,
+            prompt_version=payload.prompt_version,
+            platform=payload.platform,
+            since_hours=payload.since_hours,
+            limit=payload.limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/demands")

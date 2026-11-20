@@ -9,6 +9,8 @@ from app.services.demand import classify
 from app.services.llm import analyze_batch, embed_texts, provider_status
 from app.storage.db import CommentFilters, connect, get_recent_hours, iter_comments
 
+PROMPT_VERSION = "demand-analysis-v1"
+
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_+#.-]{2,}|[\u4e00-\u9fff]{2,}")
 
 
@@ -76,12 +78,19 @@ def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
     sample_limit = max(1, min(limit, 3000))
     run_at = datetime.now(UTC).isoformat()
     provider = provider_status()
+    model_version = provider.get("model") or "local-rule-v1"
+    prompt_version = PROMPT_VERSION
     with connect() as conn:
-        cur = conn.execute("INSERT INTO analysis_runs(started_at,provider,status) VALUES(?,?,?)",
-                           (run_at, provider["semantic_mode"], "running"))
+        cur = conn.execute(
+            """INSERT INTO analysis_runs(
+                started_at,provider,status,model_version,prompt_version
+            ) VALUES(?,?, 'running',?,?)""",
+            (run_at, provider["semantic_mode"], model_version, prompt_version),
+        )
         run_id = cur.lastrowid
         conn.commit()
     analyses = []
+    predictions = []
     comments_seen = 0
     try:
         # Time-window filtering and the hard sample cap execute in SQLite.
@@ -113,8 +122,19 @@ def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
                 by_id = {item["id"]: item for item in llm_results}
                 for row in chunk:
                     item = by_id.get(f"{row['platform']}::{row['comment_id']}")
-                    if item and item.get("is_demand"):
-                        analyses.append({**row, **item})
+                    if item:
+                        predictions.append({
+                            "analysis_run_id": run_id,
+                            "platform": row["platform"],
+                            "comment_id": row["comment_id"],
+                            "is_demand": bool(item.get("is_demand")),
+                            "category": str(item.get("category") or "其他"),
+                            "model_version": model_version,
+                            "prompt_version": prompt_version,
+                            "analyzed_at": run_at,
+                        })
+                        if item.get("is_demand"):
+                            analyses.append({**row, **item})
         vectors = embed_texts([item["semantic_text"] for item in analyses]) if provider["embedding_model"] else None
         groups = _clusters(analyses, vectors)
         clusters, saved = [], []
@@ -140,6 +160,16 @@ def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
                     m.get("intent", ""), float(m.get("confidence", 0.5)), m["semantic_text"],
                     cluster_id, score, run_at, json.dumps(m, ensure_ascii=False, default=str)))
         with connect() as conn:
+            conn.executemany(
+                """INSERT INTO analysis_predictions(
+                    analysis_run_id,platform,comment_id,is_demand,category,
+                    model_version,prompt_version,analyzed_at
+                ) VALUES(:analysis_run_id,:platform,:comment_id,:is_demand,:category,
+                         :model_version,:prompt_version,:analyzed_at)
+                ON CONFLICT(analysis_run_id,platform,comment_id) DO UPDATE SET
+                    is_demand=excluded.is_demand,category=excluded.category""",
+                predictions,
+            )
             conn.executemany("""INSERT INTO demand_analyses VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(platform,comment_id) DO UPDATE SET
                 category=excluded.category,need_summary=excluded.need_summary,intent=excluded.intent,
@@ -155,7 +185,8 @@ def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
             conn.execute("""UPDATE analysis_runs SET finished_at=?,comments_seen=?,demands_found=?,
                 clusters_found=?,status='succeeded' WHERE id=?""",
                 (datetime.now(UTC).isoformat(), comments_seen, len(analyses), len(clusters), run_id))
-        return {"run_id": run_id, "provider": provider, "comments_seen": comments_seen,
+        return {"run_id": run_id, "provider": provider, "model_version": model_version,
+                "prompt_version": prompt_version, "comments_seen": comments_seen,
                 "demands_found": len(analyses), "clusters_found": len(clusters),
                 "clusters": sorted(clusters, key=lambda c: c["strength_score"], reverse=True)}
     except Exception as exc:
