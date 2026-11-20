@@ -6,8 +6,8 @@ from app.services.demand import classify
 from app.services.llm import LLMUnavailable, expand_keyword_batch, provider_status
 from app.storage.db import connect, get_setting, list_comments
 
-PUNCT = re.compile(r"[，。！？、；：,.!?;:（）()【】\\[\\]{}\"'“”‘’]+")
-SPACE = re.compile(r"\\s+")
+PUNCT = re.compile(r"[，。！？、；：,.!?;:（）()【】{}\"'“”‘’]+")
+SPACE = re.compile(r"\s+")
 SYNONYMS = {"批处理": "批量处理", "自动归档": "自动整理", "免费平替": "免费替代方案"}
 CATEGORIES = {"问题表达": "问题求解", "场景词": "场景表达", "痛点词": "痛点表达",
               "求助词": "求助表达", "替代方案词": "替代需求", "付费意愿": "购买意向"}
