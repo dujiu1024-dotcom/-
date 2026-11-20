@@ -1,6 +1,5 @@
 import json
 import threading
-import time
 import uuid
 from datetime import UTC, datetime
 
@@ -335,7 +334,13 @@ def execute_discovery_batch(run_id, platforms=None, max_tasks=100):
                 VALUES(?,?,?,?,?,?,?)""",
                 (uuid.uuid4().hex[:12], run_id, index, task["platform"],
                  task["query_term"], task["query_index"], "queued"))
-    job = _start_batch_task(run_id, execution)
+    try:
+        job = _start_batch_task(run_id, execution)
+    except RuntimeError as exc:
+        with connect() as conn:
+            conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
+                         (f"批次已持久化但启动失败：{exc}", run_id))
+        raise
     return {"run_id": run_id, "status": "running", "task_count": len(tasks),
             "platform_count": len(selected), "first_job_id": job["id"],
             "current_task": tasks[0]}
@@ -450,6 +455,9 @@ def resume_discovery_batch(run_id):
     try:
         job = _start_batch_task(run_id, execution)
     except RuntimeError as exc:
+        with connect() as conn:
+            conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
+                         (f"恢复失败：{exc}", run_id))
         raise ValueError(f"恢复失败：{exc}") from exc
     return {"id": run_id, "status": "running", "job_id": job["id"],
             "current_task": execution["tasks"][cursor], "notes": "已恢复当前子任务"}
@@ -486,7 +494,10 @@ def start_discovery_worker():
                             execution = json.loads(queued_run["execution_json"] or "{}")
                             if execution.get("batch") and not execution.get("job_id"):
                                 _start_batch_task(queued_run["id"], execution)
-                        except (RuntimeError, OSError, ValueError):
+                        except (RuntimeError, OSError, ValueError) as exc:
+                            with connect() as conn:
+                                conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
+                                             (f"后台启动失败，批次已暂停：{exc}", queued_run["id"]))
                             continue
                     for row in rows:
                         if _worker_stop.is_set():
