@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import json
+import logging
+import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -9,6 +10,9 @@ from app.collectors.registry import list_platforms
 from app.services.crawler_engine import SUPPORTED, list_jobs, start_job
 from app.services.source_tracking import _schema
 from app.storage.db import connect
+
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -118,6 +122,5 @@ def schedule_loop(stop_event, interval_seconds: int = 30) -> None:
     while not stop_event.wait(interval_seconds):
         try:
             tick_schedules()
-        except Exception:
-            # The scheduler is best-effort; task and API processes remain available.
-            continue
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            logger.warning("来源调度检查失败：%s", exc)

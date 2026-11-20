@@ -103,7 +103,7 @@ def test_schedule_configuration_and_scheduler_dispatch(tmp_path, monkeypatch):
     configure_schedule(source_id, True)
     with connect() as conn:
         conn.execute("UPDATE source_schedules SET next_run_at='2000-01-01T00:00:00+00:00'")
-    monkeypatch.setattr(scheduler, "list_jobs", lambda: [])
+    monkeypatch.setattr(scheduler, "list_jobs", list)
     monkeypatch.setattr(scheduler, "start_job", lambda payload: {
         "id": "job-123", "status": "running", "started_at": "2026-11-20T00:00:00+00:00"
     })

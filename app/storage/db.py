@@ -83,7 +83,7 @@ def _content_fingerprint(record: CommentRecord) -> str | None:
         identity = (record.content_title or "").strip()
     if not identity:
         return None
-    return hashlib.sha256(f"{record.platform}:{identity}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{record.platform}:{identity}".encode()).hexdigest()
 
 
 def _upsert_content(conn: sqlite3.Connection, record: CommentRecord, now: str) -> None:
