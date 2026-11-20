@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -23,7 +24,26 @@ def _now() -> str:
 
 
 def engine_status() -> dict[str, Any]:
-    return {"installed": (ENGINE_ROOT / "main.py").is_file(), "root": str(ENGINE_ROOT), "expected_url": ENGINE_URL, "python": sys.executable}
+    config_file = ENGINE_ROOT / "config" / "base_config.py"
+    config_text = config_file.read_text(encoding="utf-8") if config_file.is_file() else ""
+    return {"installed": (ENGINE_ROOT / "main.py").is_file(), "isolated_profiles": "ENABLE_CDP_MODE = False" in config_text and "SAVE_LOGIN_STATE = True" in config_text, "root": str(ENGINE_ROOT), "expected_url": ENGINE_URL, "python": sys.executable}
+
+
+def _enable_isolated_profiles() -> None:
+    config_file = ENGINE_ROOT / "config" / "base_config.py"
+    if not config_file.is_file():
+        raise RuntimeError("MediaCrawler 配置文件结构变化，无法确认浏览器隔离模式；请勿直接启动采集")
+    source = config_file.read_text(encoding="utf-8")
+    patched, count = re.subn(r"(?m)^ENABLE_CDP_MODE\\s*=\\s*True\\s*$", "ENABLE_CDP_MODE = False", source)
+    if count != 1:
+        if not re.search(r"(?m)^ENABLE_CDP_MODE\\s*=\\s*False\\s*$", source):
+            raise RuntimeError("未能安全关闭 MediaCrawler 的 CDP 共享浏览器模式，请检查上游版本")
+        patched = source
+    patched, save_count = re.subn(r"(?m)^SAVE_LOGIN_STATE\\s*=\\s*False\\s*$", "SAVE_LOGIN_STATE = True", patched)
+    if save_count:
+        config_file.write_text(patched, encoding="utf-8")
+    elif count:
+        config_file.write_text(patched, encoding="utf-8")
 
 
 def install_engine() -> dict[str, Any]:
@@ -36,11 +56,12 @@ def install_engine() -> dict[str, Any]:
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout or "git clone 失败")[-4000:])
     requirements = ENGINE_ROOT / "requirements.txt"
+    _enable_isolated_profiles()
     if requirements.is_file():
         installed = subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(requirements)], capture_output=True, text=True, timeout=900, check=False)
         if installed.returncode:
             raise RuntimeError((installed.stderr or installed.stdout or "依赖安装失败")[-6000:])
-    return {"installed": True, "already_installed": False, "root": str(ENGINE_ROOT)}
+    return {"installed": True, "already_installed": False, "isolated_profiles": True, "root": str(ENGINE_ROOT)}
 
 
 def session_status() -> list[dict[str, Any]]:
