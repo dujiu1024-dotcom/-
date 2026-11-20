@@ -398,7 +398,7 @@ def execute_discovery_batch(run_id, platforms=None, max_tasks=100, max_posts=30)
         if len(tasks) > max_tasks:
             raise ValueError(f"本批次最多 {max_tasks} 个任务，当前生成 {len(tasks)} 个；请拆分策略")
         execution = {"batch": True, "tasks": tasks, "cursor": 0, "completed": 0, "failed": 0,
-                 "created_at": _now()}
+                 "created_at": _now(), "max_posts": max(1, min(int(max_posts), 100))}
     with connect() as conn:
         cur = conn.execute("UPDATE discovery_runs SET status='queued', execution_json=?, notes=? WHERE id=? AND status='prepared'",
                            (json.dumps(execution, ensure_ascii=False), "批量任务已持久化，等待全局租约持有者调度。", run_id))
