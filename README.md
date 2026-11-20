@@ -18,7 +18,7 @@
 
 ```bash
 git clone https://github.com/dujiu1024-dotcom/-.git
-cd -
+cd ./-
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
