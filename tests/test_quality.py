@@ -95,10 +95,10 @@ def test_collection_task_persistence_and_export_delta(tmp_path, monkeypatch):
     export_dir = tmp_path / "exports"
     export_dir.mkdir()
     file_path = export_dir / "comments.jsonl"
-    file_path.write_text('{"id":1}\\n', encoding="utf-8")
+    file_path.write_text('{"id":1}\n', encoding="utf-8")
     baseline = {str(file_path): file_path.stat().st_size}
     with file_path.open("a", encoding="utf-8") as stream:
-        stream.write('{"id":2}\\n{"id":3}\\n')
+        stream.write('{"id":2}\n{"id":3}\n')
     assert _count_export_delta({
         "export_dir": str(export_dir), "export_baseline": baseline,
     }) == 2
