@@ -74,7 +74,8 @@ def test_discovery_executes_platform_search_and_imports_posts(tmp_path, monkeypa
     monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-exec.sqlite3")
     monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
     job = {"id": "job-123", "status": "running", "platform": "bilibili"}
-    monkeypatch.setattr(discovery, "start_job", lambda payload: job)
+    started_payload = {}
+    monkeypatch.setattr(discovery, "start_job", lambda payload: (started_payload.update(payload) or job))
     client = TestClient(app)
     project = client.post("/api/v1/collection/projects", json={"name": "执行测试"}).json()
     strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
@@ -93,8 +94,9 @@ def test_discovery_executes_platform_search_and_imports_posts(tmp_path, monkeypa
     started_job = discovery._start_batch_task(run["id"], execution)
     assert job["id"] == started_job["id"]
 
-    folder = tmp_path / "exports" / "bilibili"
-    folder.mkdir(parents=True)
+    folder = __import__("pathlib").Path(started_payload["export_dir"])
+    assert folder.is_dir()
+    assert "/runs/" in str(folder)
     export = folder / "contents.jsonl"
     export.write_text(json.dumps({
         "bvid": "BV123", "title": "AI 工具真实体验", "desc": "寻找自动化工具",
@@ -111,6 +113,17 @@ def test_discovery_executes_platform_search_and_imports_posts(tmp_path, monkeypa
     assert refreshed.json()["result_count"] == 1
     results = client.get("/api/v1/discovery/results").json()
     assert results["items"][0]["title"] == "AI 工具真实体验"
+    imports = client.get(f"/api/v1/discovery/runs/{run['id']}/imports").json()
+    assert imports["total"] == 1
+    assert imports["items"][0]["file_fingerprint"]
+    assert imports["items"][0]["file_size"] == export.stat().st_size
+    assert imports["items"][0]["row_count"] == 1
+    assert imports["items"][0]["imported_count"] == 1
+    assert imports["items"][0]["status"] == "imported"
+    task_detail = client.get(f"/api/v1/discovery/runs/{run['id']}/tasks").json()["items"][0]
+    assert task_detail["export_dir"].endswith("attempt-0001")
+    assert task_detail["imported_file_count"] == 1
+    assert task_detail["imported_row_count"] == 1
 
 
 def test_discovery_execution_rejects_unavailable_platform(tmp_path, monkeypatch):
@@ -458,3 +471,110 @@ def test_worker_refuses_to_start_after_lease_loss(tmp_path, monkeypatch):
             (run["id"],),
         ).fetchone()
     assert task["status"] == "queued"
+
+
+
+def test_discovery_attempt_export_directories_are_isolated(tmp_path, monkeypatch):
+    import json
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-isolation.sqlite3")
+    monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
+    payloads = []
+    monkeypatch.setattr(discovery, "start_job", lambda payload: (
+        payloads.append(dict(payload)) or {"id": f"job-{len(payloads)}", "pid": 100+len(payloads)}
+    ))
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "目录隔离"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "隔离策略", "topic": "测试", "terms": ["词一"], "platforms": ["bilibili", "zhihu"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+    client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={})
+    with db.connect() as conn:
+        execution = json.loads(conn.execute(
+            "SELECT execution_json FROM discovery_runs WHERE id=?", (run["id"],)
+        ).fetchone()[0])
+    discovery._start_batch_task(run["id"], execution)
+    first_dir = payloads[0]["export_dir"]
+    with db.connect() as conn:
+        conn.execute("UPDATE discovery_run_tasks SET status='succeeded' WHERE run_id=? AND task_index=0",
+                     (run["id"],))
+        conn.execute("UPDATE discovery_runs SET status='running' WHERE id=?", (run["id"],))
+    execution["cursor"] = 1
+    discovery._start_batch_task(run["id"], execution)
+    second_dir = payloads[1]["export_dir"]
+    assert first_dir != second_dir
+    assert f"/{run['id']}/" in first_dir
+    assert f"/{run['id']}/" in second_dir
+    assert first_dir.endswith("attempt-0001")
+    assert second_dir.endswith("attempt-0001")
+    assert __import__("pathlib").Path(first_dir).is_dir()
+    assert __import__("pathlib").Path(second_dir).is_dir()
+
+
+def test_discovery_import_file_fingerprint_is_idempotent(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-fingerprint.sqlite3")
+    monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "指纹幂等"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "指纹策略", "topic": "测试", "terms": ["关键词"], "platforms": ["bilibili"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+    client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={})
+    with db.connect() as conn:
+        task = conn.execute(
+            "SELECT id FROM discovery_run_tasks WHERE run_id=? AND task_index=0",
+            (run["id"],),
+        ).fetchone()
+    export_dir = tmp_path / "exports" / "runs" / run["id"] / task["id"] / "attempt-0001"
+    export_dir.mkdir(parents=True)
+    export = export_dir / "content.jsonl"
+    payload = {"bvid": "BV-FINGERPRINT", "title": "指纹测试", "url": "https://example.com/BV-FINGERPRINT"}
+    content = json.dumps(payload, ensure_ascii=False) + "\n"
+    export.write_text(content, encoding="utf-8")
+    first = discovery._import_discovery_exports(
+        run["id"], task["id"], 1, "bilibili", "关键词", export_dir
+    )
+    second = discovery._import_discovery_exports(
+        run["id"], task["id"], 1, "bilibili", "关键词", export_dir
+    )
+    expected = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    assert first["imported_file_count"] == 1
+    assert first["imported_row_count"] == 1
+    assert second["imported_file_count"] == 0
+    assert second["imported_row_count"] == 0
+    with db.connect() as conn:
+        batches = conn.execute(
+            "SELECT file_fingerprint,file_size,row_count,imported_count,status "
+            "FROM discovery_import_batches WHERE run_id=?", (run["id"],)
+        ).fetchall()
+        contents = conn.execute(
+            "SELECT COUNT(*) AS count FROM discovered_contents WHERE run_id=?", (run["id"],)
+        ).fetchone()["count"]
+    assert len(batches) == 1
+    assert batches[0]["file_fingerprint"] == expected
+    assert batches[0]["file_size"] == len(content.encode("utf-8"))
+    assert batches[0]["row_count"] == 1
+    assert batches[0]["imported_count"] == 1
+    assert batches[0]["status"] == "imported"
+    assert contents == 1
+
+
+def test_crawler_command_rejects_export_directory_outside_data_root(tmp_path, monkeypatch):
+    import pytest
+    from app.services import crawler_engine
+
+    monkeypatch.setattr(crawler_engine, "DATA_ROOT", tmp_path)
+    with pytest.raises(ValueError, match="exports"):
+        crawler_engine._build_command({
+            "platform": "bilibili", "mode": "search", "keywords": "测试",
+            "export_dir": tmp_path.parent / "outside",
+        })

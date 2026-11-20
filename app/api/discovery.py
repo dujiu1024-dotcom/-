@@ -122,6 +122,22 @@ def discovery_run_tasks(run_id: str):
     return {"items": [dict(row) for row in rows], "total": len(rows)}
 
 
+@router.get("/runs/{run_id}/imports")
+def discovery_run_import_batches(run_id: str):
+    from app.storage.db import connect
+    with connect() as conn:
+        exists = conn.execute("SELECT 1 FROM discovery_runs WHERE id=?", (run_id,)).fetchone()
+        if not exists:
+            raise HTTPException(404, "发现批次不存在")
+        rows = conn.execute("""
+            SELECT id,task_id,attempt_number,platform,file_path,file_fingerprint,
+                   file_size,modified_at,row_count,imported_count,skipped_count,
+                   status,error,created_at,completed_at
+            FROM discovery_import_batches WHERE run_id=? ORDER BY created_at DESC
+        """, (run_id,)).fetchall()
+    return {"items": [dict(row) for row in rows], "total": len(rows)}
+
+
 @router.get("/results")
 def discovery_results(run_id: str | None = None, status: str | None = None,
                       limit: int = Query(100, ge=1, le=500),
