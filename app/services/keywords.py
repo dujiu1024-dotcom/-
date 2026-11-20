@@ -118,3 +118,70 @@ def list_candidates(project_id: str = "default", status: str | None = None,
         rows = conn.execute(f"SELECT * FROM keyword_candidates WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
                             [*params, max(1, min(limit, 200)), max(0, offset)]).fetchall()
     return {"total": total, "items": [dict(r) for r in rows], "limit": limit, "offset": offset}
+
+
+def review_candidate(candidate_id: int, action: str, note: str = "",
+                    reviewer: str = "local-user", target_candidate_id: int | None = None) -> dict | None:
+    allowed = {"approve": "approved", "reject": "rejected", "defer": "deferred",
+               "disable": "disabled", "reactivate": "pending"}
+    if action not in {*allowed, "merge"}:
+        raise ValueError("不支持的审核动作")
+    now = datetime.now(UTC).isoformat()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM keyword_candidates WHERE id=?", (candidate_id,)).fetchone()
+        if not row:
+            return None
+        if action == "merge":
+            target = conn.execute("SELECT * FROM keyword_candidates WHERE id=?",
+                                  (target_candidate_id,)).fetchone()
+            if not target or target["id"] == candidate_id or target["project_id"] != row["project_id"]:
+                raise ValueError("合并目标不存在或不属于同一项目")
+            if target["status"] in {"rejected", "disabled", "merged"}:
+                raise ValueError("合并目标状态不可用")
+            status = "merged"
+        else:
+            status = allowed[action]
+        conn.execute("UPDATE keyword_candidates SET status=?,merged_into_id=?,updated_at=? WHERE id=?",
+                     (status, target_candidate_id if action == "merge" else None, now, candidate_id))
+        conn.execute("""INSERT INTO keyword_reviews
+            (candidate_id,action,reviewer,note,target_candidate_id,created_at) VALUES(?,?,?,?,?,?)""",
+            (candidate_id, action, reviewer[:100], note[:1000], target_candidate_id, now))
+        result = conn.execute("SELECT * FROM keyword_candidates WHERE id=?", (candidate_id,)).fetchone()
+    return dict(result)
+
+
+def include_candidate(candidate_id: int, strategy_id: str, reviewer: str = "local-user") -> dict:
+    now = datetime.now(UTC).isoformat()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        candidate = conn.execute("SELECT * FROM keyword_candidates WHERE id=?", (candidate_id,)).fetchone()
+        strategy = conn.execute("SELECT * FROM search_strategies WHERE id=?", (strategy_id,)).fetchone()
+        if not candidate or not strategy:
+            raise ValueError("候选词或搜索策略不存在")
+        if candidate["status"] != "approved":
+            raise ValueError("只有审核通过的候选词才能纳入正式策略")
+        if candidate["project_id"] != strategy["project_id"]:
+            raise ValueError("候选词与搜索策略不属于同一项目")
+        terms = json.loads(strategy["terms_json"])
+        if candidate["keyword"] not in terms:
+            terms.append(candidate["keyword"])
+            conn.execute("UPDATE search_strategies SET terms_json=?,updated_at=? WHERE id=?",
+                         (json.dumps(terms, ensure_ascii=False), now, strategy_id))
+        conn.execute("UPDATE keyword_candidates SET status='included',updated_at=? WHERE id=?",
+                     (now, candidate_id))
+        conn.execute("""INSERT INTO keyword_reviews
+            (candidate_id,action,reviewer,note,created_at) VALUES(?,?,?,?,?)""",
+            (candidate_id, "include", reviewer[:100], f"纳入策略 {strategy_id}", now))
+    return {"candidate_id": candidate_id, "strategy_id": strategy_id, "keyword": candidate["keyword"],
+            "included": True, "terms": terms}
+
+
+def get_candidate(candidate_id: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM keyword_candidates WHERE id=?", (candidate_id,)).fetchone()
+        if not row:
+            return None
+        reviews = conn.execute("SELECT * FROM keyword_reviews WHERE candidate_id=? ORDER BY created_at DESC",
+                               (candidate_id,)).fetchall()
+    return {**dict(row), "reviews": [dict(item) for item in reviews]}
