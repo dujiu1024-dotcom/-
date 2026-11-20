@@ -19,3 +19,17 @@ def test_dashboard_and_engine_status():
     assert "installed" in status
     sessions = client.get("/api/v1/sessions").json()
     assert len(sessions) == 7
+
+def test_configurable_window_and_extended_platforms(tmp_path, monkeypatch):
+    from app.storage import db
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "api-test.sqlite3")
+    client = TestClient(app)
+    settings = client.get("/api/v1/settings")
+    assert settings.status_code == 200
+    assert settings.json()["recent_hours"] == 72
+    updated = client.put("/api/v1/settings/time-window", json={"hours": 48})
+    assert updated.status_code == 200
+    assert updated.json()["recent_hours"] == 48
+    platforms = {item["code"] for item in client.get("/api/v1/platforms").json()}
+    assert {"toutiao", "wechat_mp", "youtube", "reddit", "tiktok", "twitter", "instagram"} <= platforms
+    assert client.get("/api/v1/analytics/trends?since_hours=168&bucket=day").status_code == 200
