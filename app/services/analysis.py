@@ -9,14 +9,14 @@ from app.services.demand import classify
 from app.services.llm import analyze_batch, embed_texts, provider_status
 from app.storage.db import connect, get_recent_hours, list_comments
 
-TOKEN_RE = re.compile(r"[a-zA-Z0-9_+#.-]{2,}|[\\u4e00-\\u9fff]{2,}")
+TOKEN_RE = re.compile(r"[a-zA-Z0-9_+#.-]{2,}|[\u4e00-\u9fff]{2,}")
 
 
 def _tokens(text: str) -> set[str]:
     words = set(TOKEN_RE.findall(text.lower()))
-    compact = re.sub(r"\\s+", "", text.lower())
+    compact = re.sub(r"\s+", "", text.lower())
     words.update(compact[i:i + 2] for i in range(max(0, len(compact) - 1))
-                 if "\\u4e00" <= compact[i] <= "\\u9fff" and "\\u4e00" <= compact[i + 1] <= "\\u9fff")
+                 if "\u4e00" <= compact[i] <= "\u9fff" and "\u4e00" <= compact[i + 1] <= "\u9fff")
     return words
 
 
@@ -124,8 +124,12 @@ def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
                     m.get("intent", ""), float(m.get("confidence", 0.5)), m["semantic_text"],
                     cluster_id, score, run_at, json.dumps(m, ensure_ascii=False, default=str)))
         with connect() as conn:
-            conn.execute("DELETE FROM demand_analyses")
-            conn.executemany("INSERT INTO demand_analyses VALUES(?,?,?,?,?,?,?,?,?,?,?)", saved)
+            conn.executemany("""INSERT INTO demand_analyses VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(platform,comment_id) DO UPDATE SET
+                category=excluded.category,need_summary=excluded.need_summary,intent=excluded.intent,
+                confidence=excluded.confidence,semantic_text=excluded.semantic_text,
+                cluster_id=excluded.cluster_id,strength_score=excluded.strength_score,
+                analyzed_at=excluded.analyzed_at,raw_analysis=excluded.raw_analysis""", saved)
             conn.execute("DELETE FROM demand_clusters")
             for c in clusters:
                 conn.execute("INSERT INTO demand_clusters VALUES(?,?,?,?,?,?,?,?,?,?,?)",
