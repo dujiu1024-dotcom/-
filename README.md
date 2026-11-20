@@ -70,7 +70,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `GET /api/v1/analytics/trends?since_hours=720&bucket=day`
 - `GET /api/v1/discovery/strategies?project_id=...` / `POST /api/v1/discovery/projects/{project_id}/strategies`
 - `POST /api/v1/discovery/strategies/{strategy_id}/runs`：生成发现批次及查询词清单
-- `POST /api/v1/discovery/runs/{run_id}/execute?platform=bilibili&query_index=0`：通过已安装的 MediaCrawler 启动单个平台、单个搜索词任务（首批支持小红书、抖音、快手、B站、微博、贴吧、知乎）
+- `POST /api/v1/discovery/runs/{run_id}/execute?platform=bilibili&query_index=0`：启动单个平台、单个搜索词任务\n- `POST /api/v1/discovery/runs/{run_id}/execute-batch`：按策略配置的平台与搜索词生成串行任务队列，单批最多 100 个子任务；前端每 3 秒轮询状态并推进下一项，避免同时启动多个 MediaCrawler 进程
 - `GET /api/v1/discovery/runs/{run_id}`：刷新任务状态；平台任务结束后尝试从新生成的内容导出文件中归一化发现结果
 - `GET /api/v1/discovery/results` / `POST /api/v1/discovery/runs/{run_id}/results`
 - `POST /api/v1/discovery/results/{content_id}/approve`：审核作者并沉淀为采集库来源
