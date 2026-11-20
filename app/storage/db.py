@@ -220,20 +220,26 @@ def iter_comments(
     filters: CommentFilters | Mapping[str, object] | None = None,
     batch_size: int = 250,
     limit: int | None = None,
+    offset: int = 0,
 ) -> Iterator[dict]:
     """Stream a bounded SQL result in fetchmany() batches."""
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
     if limit is not None and limit < 1:
         raise ValueError("limit must be at least 1 when provided")
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
     where, params = _comment_where(filters)
     sql = (
         "SELECT * FROM comments" + where
         + " ORDER BY imported_at DESC, platform ASC, comment_id ASC"
     )
     if limit is not None:
-        sql += " LIMIT ?"
-        params.append(limit)
+        sql += " LIMIT ? OFFSET ?"
+        params.extend((limit, offset))
+    elif offset:
+        sql += " LIMIT -1 OFFSET ?"
+        params.append(offset)
     conn = connect()
     try:
         cursor = conn.execute(sql, params)
