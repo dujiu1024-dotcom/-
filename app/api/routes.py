@@ -13,6 +13,10 @@ from app.services.crawler_engine import (
 )
 from app.services.demand import demand_candidates
 from app.services.settings import get_settings, update_recent_hours
+from app.services.source_tracking import (
+    discover_candidates, list_candidates, list_sources, merge_sources,
+    review_candidate, update_source,
+)
 from app.storage.db import get_recent_hours, list_comments, upsert_comment
 
 router = APIRouter(prefix="/api/v1")
@@ -32,6 +36,29 @@ class ExternalCollectRequest(BaseModel):
     mode: str = "search"
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=50, ge=1, le=200)
+
+
+class SourceReviewRequest(BaseModel):
+    action: str
+    group_name: str = Field(default="", max_length=100)
+    priority: int = Field(default=5, ge=1, le=10)
+    interval_minutes: int = Field(default=1440, ge=15, le=10080)
+    window_hours: int = Field(default=72, ge=1, le=8760)
+    tracking_scope: str = "creator"
+
+
+class SourceUpdateRequest(BaseModel):
+    group_name: str | None = Field(default=None, max_length=100)
+    enabled: bool | None = None
+    priority: int | None = Field(default=None, ge=1, le=10)
+    interval_minutes: int | None = Field(default=None, ge=15, le=10080)
+    window_hours: int | None = Field(default=None, ge=1, le=8760)
+    tracking_scope: str | None = None
+
+
+class SourceMergeRequest(BaseModel):
+    source_ids: list[str] = Field(min_length=2, max_length=100)
+    target_id: str
 
 
 @router.get("/platforms")
@@ -170,6 +197,54 @@ def comments(since_hours: int | None = Query(None, ge=1, le=8760),
     rows = list_comments(since_hours=hours, platform=platform,
                          include_unknown_time=include_unknown_time)
     return {"count": len(rows), "since_hours": hours, "items": rows}
+
+
+@router.post("/sources/discover")
+def source_discover(limit: int = Query(500, ge=1, le=5000)):
+    return discover_candidates(limit)
+
+
+@router.get("/sources/candidates")
+def source_candidates(status: str | None = None, limit: int = Query(200, ge=1, le=1000)):
+    return {"count": len(items := list_candidates(status, limit)), "items": items}
+
+
+@router.post("/sources/candidates/{candidate_id}/review")
+def source_candidate_review(candidate_id: str, payload: SourceReviewRequest):
+    try:
+        return review_candidate(candidate_id, payload.action, payload.group_name,
+                                payload.priority, payload.interval_minutes,
+                                payload.window_hours, payload.tracking_scope)
+    except KeyError as exc:
+        raise HTTPException(404, "来源候选不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/sources")
+def sources(enabled: bool | None = None, limit: int = Query(500, ge=1, le=2000)):
+    items = list_sources(enabled, limit)
+    return {"count": len(items), "items": items}
+
+
+@router.patch("/sources/{source_id}")
+def source_update(source_id: str, payload: SourceUpdateRequest):
+    try:
+        return update_source(source_id, **payload.model_dump(exclude_none=True))
+    except KeyError as exc:
+        raise HTTPException(404, "追踪来源不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/sources/merge")
+def source_merge(payload: SourceMergeRequest):
+    try:
+        return merge_sources(payload.source_ids, payload.target_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.post("/analysis/run")
