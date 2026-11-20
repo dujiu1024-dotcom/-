@@ -613,12 +613,18 @@ def _refresh_discovery_run_locked(run_id, lease_owner=None):
                 (run_id, execution.get("cursor", 0)),
             ).fetchone()
         if task_row:
+            fallback = classify_collection_error(
+                job.get("error_message") or f"采集任务退出码：{job.get('exit_code', 'unknown')}"
+            )
             classification = {
-                "code": job.get("error_code") or "COLLECTION_UNKNOWN",
-                "category": job.get("error_category") or "unknown",
-                "message": job.get("error_message") or f"采集任务退出码：{job.get('exit_code', 'unknown')}",
-                "retryable": bool(job.get("retryable", False)),
-                "manual_intervention": bool(job.get("manual_intervention", False)),
+                **fallback,
+                "code": job.get("error_code") or fallback["code"],
+                "category": job.get("error_category") or fallback["category"],
+                "message": job.get("error_message") or fallback["message"],
+                "retryable": bool(job.get("retryable", fallback["retryable"])),
+                "manual_intervention": bool(job.get(
+                    "manual_intervention", fallback["manual_intervention"]
+                )),
             }
             if classification["retryable"] and int(task_row["attempt_count"] or 0) < int(task_row["max_attempts"] or _DEFAULT_MAX_ATTEMPTS):
                 return _schedule_retry(run_id, execution, task_row, job, classification)
