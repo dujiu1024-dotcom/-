@@ -11,6 +11,7 @@
 <div class="brand"><strong>需求情报工作台</strong><span>DEMAND INTELLIGENCE · LOCAL</span></div>
 <div><div class="navgroup">工作空间</div><nav class="nav">
 <button class="active" data-page="overview"><span class="ico">◫</span>情报总览</button>
+<button data-page="discovery"><span class="ico">⌕</span>全网发现</button>
 <button data-page="library"><span class="ico">▤</span>采集库 <span id="navSourceCount" class="source-count"></span></button>
 <button data-page="comments"><span class="ico">☷</span>评论数据</button>
 <button data-page="demands"><span class="ico">◈</span>需求分析</button>
@@ -37,6 +38,26 @@
 <div class="panel"><div class="panelhead"><div><h2>采集项目</h2><p>按项目组织采集对象</p></div><button class="secondary small" data-go="library">进入采集库</button></div><div id="overviewProjects" class="empty">正在读取项目…</div></div>
 </div>
 <div class="panel"><div class="panelhead"><div><h2>近期采集任务</h2><p>查看最近执行情况</p></div><button class="secondary small" data-go="tasks">任务中心</button></div><div id="recentJobs" class="empty">正在读取任务…</div></div>
+</section>
+<section class="page" id="page-discovery">
+<div class="pagehead"><div><h1>全网发现</h1><p>围绕研究主题生成多组搜索策略，发现陌生内容与新来源；平台执行能力按适配器实际状态展示。</p></div><button class="secondary" id="refreshDiscovery">刷新发现结果</button></div>
+<div class="notice">发现引擎与来源追踪分离：先用主题词、场景词、痛点词和求助表达主动发现内容；审核新作者后，再沉淀到采集库持续追踪。当前版本支持策略管理、批次记录、结果入库与来源审核；尚未接入的平台搜索适配器不会显示为已采集。</div>
+<div class="panel">
+<div class="panelhead"><div><h2>创建搜索策略</h2><p>每个研究项目可以配置多组策略；关键词去重后形成独立查询任务。</p></div></div>
+<div class="formgrid">
+<div class="formfield"><label>研究项目</label><select id="discoveryProject"></select></div>
+<div class="formfield"><label>策略名称</label><input id="strategyName" placeholder="例如：AI 办公痛点发现"></div>
+<div class="formfield"><label>研究主题</label><input id="strategyTopic" placeholder="例如：AI 办公工具的真实使用需求"></div>
+<div class="formfield"><label>平台范围（逗号分隔）</label><input id="strategyPlatforms" placeholder="bilibili,zhihu,xhs"></div>
+<div class="formfield full"><label>搜索词 / 表达式（每行一个，建议覆盖产品、场景、痛点、求助、替代、付费）</label><textarea id="strategyTerms" placeholder="AI PPT\nPPT 自动排版\n有没有好用的 AI 做 PPT 工具\n手动做 PPT 太耗时"></textarea></div>
+</div>
+<div style="display:flex;justify-content:flex-end;margin-top:14px"><button id="createStrategy">保存搜索策略</button></div>
+</div>
+<div class="grid2">
+<div class="panel"><div class="panelhead"><div><h2>搜索策略</h2><p>保存后可生成发现批次</p></div></div><div id="strategyList" class="empty">加载策略…</div></div>
+<div class="panel"><div class="panelhead"><div><h2>发现批次</h2><p>显示任务准备状态和结果数量</p></div></div><div id="discoveryRuns" class="empty">选择策略并生成批次</div></div>
+</div>
+<div class="panel"><div class="panelhead"><div><h2>发现结果与来源审核</h2><p>新发现内容先进入待审核状态；批准后才加入采集库。</p></div></div><div id="discoveryResults" class="empty">暂无发现结果。批次结果可通过发现接口导入，之后在此审核。</div></div>
 </section>
 <section class="page" id="page-library">
 <div class="pagehead"><div><h1>采集库</h1><p>沉淀可复用的采集项目、账号、内容链接、社区与搜索规则。保存后可重复执行。</p></div><button id="newProject">＋ 新建项目</button></div>
@@ -80,11 +101,11 @@
 <div class="toast" id="toast"></div>
 <script>
 const $=id=>document.getElementById(id);const state={page:'overview',projects:[],platforms:[],comments:{offset:0,limit:30,total:0,items:[]},jobs:[],selectedJob:null,commentItems:[]};
-const names={overview:'情报总览',library:'采集库',comments:'评论数据',demands:'需求分析',tasks:'采集任务',settings:'系统设置'};
+const names={overview:'情报总览',discovery:'全网发现',library:'采集库',comments:'评论数据',demands:'需求分析',tasks:'采集任务',settings:'系统设置'};
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,opts={}){const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.detail||r.statusText);return d}
 function toast(msg){$('toast').textContent=msg;$('toast').style.display='block';setTimeout(()=>$('toast').style.display='none',3200)}
-function go(page){state.page=page;document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='page-'+page));document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.page===page));$('crumb').textContent=names[page];if(page==='library')renderProjects();if(page==='comments')loadComments();if(page==='demands')loadDemands();if(page==='tasks')loadJobs();if(page==='settings')loadSettings()}
+function go(page){state.page=page;document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='page-'+page));document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.page===page));$('crumb').textContent=names[page];if(page==='discovery')loadDiscovery();if(page==='library')renderProjects();if(page==='comments')loadComments();if(page==='demands')loadDemands();if(page==='tasks')loadJobs();if(page==='settings')loadSettings()}
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>go(b.dataset.page));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
 async function loadProjects(){const d=await api('/api/v1/collection/projects');state.projects=d.items||[];$('navSourceCount').textContent=state.projects.reduce((n,p)=>n+(p.source_count||0),0);$('mSources').textContent=state.projects.reduce((n,p)=>n+(p.source_count||0),0);renderProjects();renderOverviewProjects()}
 function renderOverviewProjects(){const p=state.projects.slice(0,4);$('overviewProjects').innerHTML=p.length?p.map(x=>'<div class="source"><div class="sourceinfo"><strong>'+esc(x.name)+'</strong><small>'+esc(x.description||'暂无说明')+'</small></div><span class="pill">'+(x.source_count||0)+' 个对象</span></div>').join(''):'<div class="empty">还没有采集项目。先建立一个主题，再逐步添加账号、内容或搜索规则。</div>'}
@@ -117,5 +138,44 @@ $('installEngine').onclick=async()=>{try{await api('/api/v1/engine/install',{met
 $('installReverse').onclick=async()=>{try{await api('/api/v1/collectors/reverse/install',{method:'POST'});toast('扩展采集器安装完成');loadSettings()}catch(e){toast(e.message)}};
 $('globalRefresh').onclick=init;
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());
-async function init(){try{await Promise.all([loadPlatforms(),loadProjects()]);await loadOverview()}catch(e){toast(e.message)}}init();
+
+async function loadDiscovery(){
+ try{
+  const projectId=$('discoveryProject').value;
+  const [strategies,results]=await Promise.all([
+   api('/api/v1/discovery/strategies'+(projectId?'?project_id='+encodeURIComponent(projectId):'')),
+   api('/api/v1/discovery/results?limit=100')
+  ]);
+  $('discoveryProject').innerHTML=state.projects.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('');
+  const chosen=$('discoveryProject').value;
+  const rows=(strategies.items||[]).filter(x=>!chosen||x.project_id===chosen);
+  $('strategyList').innerHTML=rows.length?rows.map(x=>'<div class="source"><div class="sourceinfo"><strong>'+esc(x.name)+'</strong><small>'+esc(x.topic)+' · '+x.terms.length+' 个搜索词 · '+esc(x.platforms.join(', ')||'平台待选')+'</small></div><button class="small" data-run-strategy="'+esc(x.id)+'">生成发现批次</button></div>').join(''):'<div class="empty">当前项目还没有搜索策略。</div>';
+  $('discoveryResults').innerHTML=results.items.length?'<div class="tablewrap"><table><tr><th>内容</th><th>平台</th><th>作者</th><th>发现词</th><th>状态</th><th>操作</th></tr>'+results.items.map(x=>'<tr><td><a href="'+esc(x.content_url)+'" target="_blank" rel="noreferrer">'+esc(x.title||x.content_url)+'</a><div class="muted">'+esc((x.body||'').slice(0,120))+'</div></td><td>'+esc(x.platform)+'</td><td>'+esc(x.author_name||'未知')+'</td><td>'+esc(x.query_term)+'</td><td>'+esc(x.status)+'</td><td>'+(x.status==='new'?'<button class="small" data-approve-content="'+esc(x.id)+'">审核并追踪作者</button>':'已沉淀')+'</td></tr>').join('')+'</table></div>':'<div class="empty">暂无发现结果。可通过 /api/v1/discovery/runs/{批次编号}/results 导入平台发现结果。</div>';
+ }catch(e){$('strategyList').textContent=e.message}
+}
+$('createStrategy').onclick=async()=>{
+ const terms=$('strategyTerms').value.split(/\n|,/).map(x=>x.trim()).filter(Boolean);
+ try{
+  const d=await api('/api/v1/discovery/projects/'+$('discoveryProject').value+'/strategies',{method:'POST',body:JSON.stringify({
+   name:$('strategyName').value,topic:$('strategyTopic').value,terms,
+   platforms:$('strategyPlatforms').value.split(',').map(x=>x.trim()).filter(Boolean)
+  })});
+  toast('搜索策略已保存');$('strategyName').value='';$('strategyTopic').value='';$('strategyTerms').value='';await loadDiscovery();
+ }catch(e){toast(e.message)}
+};
+$('discoveryProject').onchange=loadDiscovery;
+$('refreshDiscovery').onclick=loadDiscovery;
+$('strategyList').onclick=async e=>{
+ const b=e.target.closest('[data-run-strategy]');if(!b)return;
+ try{const d=await api('/api/v1/discovery/strategies/'+b.dataset.runStrategy+'/runs',{method:'POST'});
+  $('discoveryRuns').innerHTML='<div class="notice"><strong>批次已生成：'+esc(d.id)+'</strong><br>状态：'+esc(d.status)+'；查询数：'+d.query_count+'；目标平台：'+esc(d.platforms.join(', ')||'未指定')+'<br>'+esc(d.notes)+'<br><br>查询词：'+esc(d.queries.join(' · '))+'</div>';
+  toast('已生成发现批次清单；尚未执行平台采集');
+ }catch(err){toast(err.message)}
+};
+$('discoveryResults').onclick=async e=>{
+ const b=e.target.closest('[data-approve-content]');if(!b)return;
+ try{await api('/api/v1/discovery/results/'+b.dataset.approveContent+'/approve',{method:'POST'});toast('作者已加入采集库追踪');await loadProjects();await loadDiscovery()}catch(err){toast(err.message)}
+};
+
+async function init(){try{await Promise.all([loadPlatforms(),loadProjects()]);await loadOverview();if(state.page==='discovery')await loadDiscovery()}catch(e){toast(e.message)}}init();
 </script></body></html>
