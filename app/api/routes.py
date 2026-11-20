@@ -346,7 +346,7 @@ class KeywordVerificationRequest(BaseModel):
     project_id: str = Field(min_length=1, max_length=100)
     platform: str = Field(min_length=1, max_length=40)
     candidate_ids: list[int] = Field(min_length=1, max_length=100)
-    requested_limit: int = Field(default=20, ge=1, le=100)
+    requested_limit: int = Field(default=20, ge=10, le=30)
 
 
 class KeywordThresholdRequest(BaseModel):
