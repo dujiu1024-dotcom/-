@@ -309,28 +309,67 @@ def execute_discovery_run(run_id, platform, query_index=0):
             "notes": "任务已持久化，由持有全局租约的后台 worker 串行领取。"}
 
 
-def _start_batch_task(run_id, execution):
+def _start_batch_task(run_id, execution, lease_owner=None):
     index = execution["cursor"]
     if index >= len(execution["tasks"]):
         return None
     task = execution["tasks"][index]
     started_at = datetime.now(UTC)
-    job = start_job({"platform": task["platform"], "mode": "search",
-                     "keywords": task["query_term"], "max_posts": 30,
-                     "max_comments_per_post": 0, "include_replies": False})
+    execution.pop("job_id", None)
+    execution["starting_at"] = started_at.isoformat()
+    execution["starting_owner"] = lease_owner or "manual-test"
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE discovery_runs SET status='starting', execution_json=?, notes=? WHERE id=? AND status='queued'",
+            (json.dumps(execution, ensure_ascii=False),
+             f"正在领取任务 {index + 1}/{len(execution['tasks'])}：{task['platform']} · {task['query_term']}",
+             run_id),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("批次状态已变化，未能领取当前任务")
+        task_cur = conn.execute(
+            """UPDATE discovery_run_tasks SET status='starting', job_id=NULL, pid=NULL,
+               started_at=?, finished_at=NULL, error=''
+               WHERE run_id=? AND task_index=? AND status IN ('queued','interrupted')""",
+            (started_at.isoformat(), run_id, index),
+        )
+        if task_cur.rowcount != 1:
+            conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
+                         ("子任务状态异常，批次已暂停，请检查任务明细。", run_id))
+            raise RuntimeError("子任务未处于可领取状态")
+    try:
+        job = start_job({"platform": task["platform"], "mode": "search",
+                         "keywords": task["query_term"], "max_posts": 30,
+                         "max_comments_per_post": 0, "include_replies": False})
+    except (RuntimeError, OSError, ValueError) as exc:
+        with connect() as conn:
+            conn.execute("UPDATE discovery_run_tasks SET status='interrupted', finished_at=?, error=? WHERE run_id=? AND task_index=?",
+                         (_now(), str(exc), run_id, index))
+            conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
+                         (f"启动失败，批次已暂停：{exc}", run_id))
+        raise
     execution.update({
         "job_id": job["id"], "platform": task["platform"],
         "query_term": task["query_term"], "query_index": task["query_index"],
         "started_at": started_at.isoformat(), "started_epoch": started_at.timestamp(),
     })
+    execution.pop("starting_at", None)
+    execution.pop("starting_owner", None)
+    if lease_owner and not _renew_worker_lease(lease_owner):
+        notes = "启动期间全局租约失效；任务进程信息已保留，批次暂停，需确认进程状态后恢复。"
+        with connect() as conn:
+            conn.execute("UPDATE discovery_run_tasks SET status='interrupted', job_id=?, pid=?, finished_at=?, error=? WHERE run_id=? AND task_index=?",
+                         (job["id"], job.get("pid"), _now(), notes, run_id, index))
+            conn.execute("UPDATE discovery_runs SET status='paused', execution_json=?, notes=? WHERE id=?",
+                         (json.dumps(execution, ensure_ascii=False), notes, run_id))
+        raise RuntimeError(notes)
     with connect() as conn:
-        conn.execute("UPDATE discovery_runs SET status='running', execution_json=?, notes=? WHERE id=?",
+        conn.execute("UPDATE discovery_runs SET status='running', execution_json=?, notes=? WHERE id=? AND status='starting'",
                      (json.dumps(execution, ensure_ascii=False),
                       f"批量执行 {index + 1}/{len(execution['tasks'])}：{task['platform']} · {task['query_term']}",
                       run_id))
-        conn.execute("""UPDATE discovery_run_tasks SET status='running', job_id=?, pid=?, started_at=?, error=''
-            WHERE run_id=? AND task_index=? AND status IN ('queued','interrupted')""",
-            (job["id"], job.get("pid"), started_at.isoformat(), run_id, index))
+        conn.execute("UPDATE discovery_run_tasks SET status='running', job_id=?, pid=?, started_at=?, error='' WHERE run_id=? AND task_index=? AND status='starting'",
+                     (job["id"], job.get("pid"), started_at.isoformat(), run_id, index))
     return job
 
 
@@ -513,11 +552,11 @@ def start_discovery_worker():
                         # A new process cannot inspect the previous process's in-memory job registry.
                         # Pause uncertain jobs rather than relaunching them automatically.
                         with connect() as conn:
-                            rows = conn.execute("SELECT id,execution_json FROM discovery_runs WHERE status IN ('running','queued')").fetchall()
+                            rows = conn.execute("SELECT id,status,execution_json FROM discovery_runs WHERE status IN ('running','queued','starting')").fetchall()
                             for row in rows:
                                 execution = json.loads(row["execution_json"] or "{}")
-                                if execution.get("job_id"):
-                                    conn.execute("UPDATE discovery_run_tasks SET status='interrupted', error=?, finished_at=? WHERE run_id=? AND status='running'",
+                                if execution.get("job_id") or row["status"] == "starting":
+                                    conn.execute("UPDATE discovery_run_tasks SET status='interrupted', error=?, finished_at=? WHERE run_id=? AND status IN ('running','starting')",
                                                  ("服务进程切换，原采集任务状态不可确认；需人工确认后恢复。", _now(), row["id"]))
                                     conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
                                                  ("服务进程切换后批次暂停；确认旧采集进程已退出后可恢复。", row["id"]))
@@ -534,7 +573,7 @@ def start_discovery_worker():
                         try:
                             execution = json.loads(queued_run["execution_json"] or "{}")
                             if execution.get("batch") and not execution.get("job_id"):
-                                _start_batch_task(queued_run["id"], execution)
+                                _start_batch_task(queued_run["id"], execution, lease_owner=_worker_id)
                         except (RuntimeError, OSError, ValueError) as exc:
                             with connect() as conn:
                                 conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=? AND status='queued'",
