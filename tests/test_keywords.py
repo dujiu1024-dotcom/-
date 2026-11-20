@@ -168,3 +168,18 @@ def test_verification_rejects_unsupported_platform(tmp_path, monkeypatch):
         assert "暂不支持" in str(exc)
     else:
         raise AssertionError("unsupported platform should be rejected")
+
+
+
+def test_rejected_keyword_updates_expansion_blacklist(tmp_path, monkeypatch):
+    from app.services import keywords
+    _insert_comment(monkeypatch, tmp_path)
+    monkeypatch.setattr(keywords, "provider_status", lambda: {"configured": False})
+    client = TestClient(app)
+    project, _ = _project_and_strategy(client)
+    client.post(f"/api/v1/keywords/expand?project_id={project['id']}")
+    candidate = client.get(f"/api/v1/keywords/candidates?project_id={project['id']}").json()["items"][0]
+    rejected = client.post(f"/api/v1/keywords/candidates/{candidate['id']}/review",
+                           json={"action": "reject", "note": "噪声词"})
+    assert rejected.status_code == 200
+    assert candidate["normalized_keyword"] in keywords._blacklist()
