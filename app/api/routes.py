@@ -14,6 +14,10 @@ from app.services.crawler_engine import (
 )
 from app.services.demand import demand_candidates
 from app.services.settings import get_settings, update_recent_hours
+from app.services.platform_capabilities import (
+    OPERATIONS, SEVEN_PLATFORMS, get_platform_capability,
+    list_capability_matrix, record_platform_verification,
+)
 from app.storage.db import get_recent_hours, list_comments, upsert_comment
 
 router = APIRouter(prefix="/api/v1")
@@ -287,3 +291,44 @@ def demands(limit: int = Query(100, ge=1, le=1000)):
 def analytics_trends(since_hours: int = Query(720, ge=1, le=8760),
                      bucket: str = Query("day", pattern="^(hour|day)$")):
     return get_trends(since_hours, bucket)
+
+
+
+class PlatformVerificationRequest(BaseModel):
+    operation: str
+    status: str
+    evidence: str = Field(min_length=1, max_length=4000)
+    notes: str = Field(default="", max_length=4000)
+    engine_version: str = Field(default="", max_length=200)
+    environment: str = Field(default="", max_length=500)
+
+
+@router.get("/platform-capabilities")
+def platform_capabilities():
+    return list_capability_matrix()
+
+
+@router.get("/platform-capabilities/{platform}")
+def platform_capability_detail(platform: str):
+    result = get_platform_capability(platform)
+    if not result:
+        raise HTTPException(404, "平台不在首批七个平台范围内")
+    return result
+
+
+@router.post("/platform-capabilities/{platform}/verification", status_code=201)
+def create_platform_verification(platform: str, payload: PlatformVerificationRequest):
+    if platform not in SEVEN_PLATFORMS:
+        raise HTTPException(404, "平台不在首批七个平台范围内")
+    try:
+        return record_platform_verification(
+            platform=platform,
+            operation=payload.operation,
+            status=payload.status,
+            evidence=payload.evidence,
+            notes=payload.notes,
+            engine_version=payload.engine_version,
+            environment=payload.environment,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
