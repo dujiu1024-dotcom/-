@@ -34,7 +34,7 @@ uvicorn app.main:app --reload
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/v1/imports/mediacrawler" \
   -H "Content-Type: application/json" \
-  -d '{"path":"data/imports/comments.jsonl","platform":"xhs"}'
+  -d '{"path":"comments.jsonl","platform":"xhs"}'
 ```
 
 导入器会尽可能识别常见字段名；不能确认评论发布时间的记录会保留为时间未知，不会被误判为 72 小时内。
