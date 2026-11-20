@@ -1,11 +1,15 @@
 import json
+import random
+import re
 import threading
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 
 from app.collectors.mediacrawler_import import read_export
 from app.config import DATA_ROOT
 from app.services.crawler_engine import SUPPORTED, get_job, start_job
+from app.services.collection_errors import classify_collection_error
 from app.storage.db import connect
 
 _worker_lock = threading.Lock()
@@ -14,6 +18,10 @@ _worker_stop = threading.Event()
 _refresh_lock = threading.RLock()
 _worker_id = uuid.uuid4().hex
 _WORKER_LEASE_SECONDS = 60
+_DEFAULT_MAX_ATTEMPTS = 4
+_BACKOFF_BASE_SECONDS = 15
+_BACKOFF_MAX_SECONDS = 300
+_RETRY_AFTER_MAX_SECONDS = 21600
 
 
 def _now():
@@ -62,6 +70,36 @@ def _ensure():
         columns = {row[1] for row in conn.execute("PRAGMA table_info(discovery_runs)")}
         if "execution_json" not in columns:
             conn.execute("ALTER TABLE discovery_runs ADD COLUMN execution_json TEXT NOT NULL DEFAULT '{}'")
+        task_columns = {row[1] for row in conn.execute("PRAGMA table_info(discovery_run_tasks)")}
+        migrations = {
+            "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "max_attempts": "INTEGER NOT NULL DEFAULT 4",
+            "next_retry_at": "TEXT",
+            "last_error_at": "TEXT",
+            "error_code": "TEXT NOT NULL DEFAULT ''",
+            "retryable": "INTEGER NOT NULL DEFAULT 0",
+            "retry_after_seconds": "INTEGER",
+            "log_path": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in migrations.items():
+            if name not in task_columns:
+                conn.execute(f"ALTER TABLE discovery_run_tasks ADD COLUMN {name} {definition}")
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS discovery_task_attempts (
+            id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES discovery_run_tasks(id) ON DELETE CASCADE,
+            attempt_number INTEGER NOT NULL, status TEXT NOT NULL,
+            started_at TEXT NOT NULL, finished_at TEXT, job_id TEXT, pid INTEGER,
+            exit_code INTEGER, error_code TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '', retryable INTEGER NOT NULL DEFAULT 0,
+            retry_after_seconds INTEGER, UNIQUE(task_id, attempt_number)
+        );
+        CREATE INDEX IF NOT EXISTS idx_discovery_task_attempts_task
+            ON discovery_task_attempts(task_id, attempt_number);
+        CREATE TABLE IF NOT EXISTS discovery_platform_cooldowns (
+            platform TEXT PRIMARY KEY, cooldown_until REAL NOT NULL,
+            reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+        );
+        """)
 
 
 def _claim_worker_lease(owner_id, lease_seconds=_WORKER_LEASE_SECONDS):
@@ -83,6 +121,111 @@ def _renew_worker_lease(owner_id, lease_seconds=_WORKER_LEASE_SECONDS):
 def _release_worker_lease(owner_id):
     with connect() as conn:
         conn.execute("UPDATE discovery_worker_leases SET owner_id='', lease_until=0, updated_at=? WHERE lease_name='global' AND owner_id=?", (_now(), owner_id))
+
+
+
+def _parse_retry_after(value, now=None):
+    """Parse Retry-After delta-seconds or HTTP-date; return a bounded delay."""
+    if value is None or str(value).strip() == "":
+        return None
+    now = now or datetime.now(UTC)
+    raw = str(value).strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            target = parsedate_to_datetime(raw)
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=UTC)
+            seconds = (target.astimezone(UTC) - now).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(0, min(_RETRY_AFTER_MAX_SECONDS, int(seconds + 0.999)))
+
+
+def _retry_after_from_job(job):
+    explicit = job.get("retry_after") or job.get("retry_after_seconds")
+    if explicit is not None:
+        return _parse_retry_after(explicit)
+    message = str(job.get("error_message") or "")
+    match = re.search(r"retry[-_ ]after\\s*[:=]\\s*([^\\s,;]+)", message, re.IGNORECASE)
+    return _parse_retry_after(match.group(1)) if match else None
+
+
+def _retry_delay(attempt_count, retry_after=None, jitter=None):
+    exponent = max(0, int(attempt_count) - 1)
+    base = min(_BACKOFF_MAX_SECONDS, _BACKOFF_BASE_SECONDS * (2 ** exponent))
+    spread = random.uniform(0, base * 0.2) if jitter is None else max(0, min(1, jitter)) * base * 0.2
+    delay = int(base + spread + 0.999)
+    if retry_after is not None:
+        delay = max(delay, _parse_retry_after(retry_after) or 0)
+    return min(_RETRY_AFTER_MAX_SECONDS, delay)
+
+
+def _platform_cooldown_until(platform):
+    _ensure()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT cooldown_until FROM discovery_platform_cooldowns WHERE platform=?",
+            (platform,),
+        ).fetchone()
+    return float(row["cooldown_until"]) if row else 0.0
+
+
+def _set_platform_cooldown(platform, seconds, reason):
+    seconds = max(0, min(_RETRY_AFTER_MAX_SECONDS, int(seconds)))
+    if seconds <= 0:
+        return
+    until = datetime.now(UTC).timestamp() + seconds
+    with connect() as conn:
+        conn.execute("""
+            INSERT INTO discovery_platform_cooldowns(platform,cooldown_until,reason,updated_at)
+            VALUES(?,?,?,?)
+            ON CONFLICT(platform) DO UPDATE SET
+                cooldown_until=MAX(discovery_platform_cooldowns.cooldown_until,excluded.cooldown_until),
+                reason=excluded.reason, updated_at=excluded.updated_at
+        """, (platform, until, str(reason)[:300], _now()))
+
+
+def _cooldown_remaining(platform, now=None):
+    return max(0, int(_platform_cooldown_until(platform) - (now or datetime.now(UTC).timestamp()) + 0.999))
+
+
+def _schedule_retry(run_id, execution, task_row, job, classification):
+    attempt_count = int(task_row["attempt_count"] or 0)
+    retry_after = _retry_after_from_job(job)
+    delay = _retry_delay(attempt_count, retry_after)
+    if classification["category"] == "rate_limited":
+        _set_platform_cooldown(task_row["platform"], delay, classification["code"])
+    retry_at = datetime.now(UTC) + timedelta(seconds=delay)
+    message = classification["message"][:2000]
+    with connect() as conn:
+        conn.execute("""
+            UPDATE discovery_run_tasks SET status='retry_wait', error=?, error_code=?,
+                retryable=1, next_retry_at=?, last_error_at=?, retry_after_seconds=?
+            WHERE id=? AND status='running'
+        """, (message, classification["code"], retry_at.isoformat(), _now(),
+              retry_after, task_row["id"]))
+        conn.execute("""
+            INSERT INTO discovery_task_attempts
+                (id,task_id,attempt_number,status,started_at,finished_at,job_id,pid,
+                 exit_code,error_code,error_message,retryable,retry_after_seconds)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(task_id,attempt_number) DO UPDATE SET
+                status=excluded.status, finished_at=excluded.finished_at,
+                job_id=excluded.job_id, pid=excluded.pid, exit_code=excluded.exit_code,
+                error_code=excluded.error_code, error_message=excluded.error_message,
+                retryable=excluded.retryable, retry_after_seconds=excluded.retry_after_seconds
+        """, (uuid.uuid4().hex, task_row["id"], attempt_count, "retry_wait",
+              task_row["started_at"] or _now(), _now(), job.get("id"), job.get("pid"),
+              job.get("exit_code"), classification["code"], message, 1, retry_after))
+        execution.pop("job_id", None)
+        conn.execute("UPDATE discovery_runs SET status='retry_wait', execution_json=?, notes=? WHERE id=?",
+                     (json.dumps(execution, ensure_ascii=False),
+                      f"{classification['code']}：第 {attempt_count}/{task_row['max_attempts']} 次执行失败，{delay} 秒后重试。",
+                      run_id))
+    return {"id": run_id, "status": "retry_wait", "retry_at": retry_at.isoformat(),
+            "retry_in_seconds": delay, "error_code": classification["code"]}
 
 
 def list_strategies(project_id=None):
@@ -310,6 +453,8 @@ def execute_discovery_run(run_id, platform, query_index=0):
 
 
 def _start_batch_task(run_id, execution, lease_owner=None):
+    if lease_owner and not _renew_worker_lease(lease_owner):
+        raise RuntimeError("全局 Worker 租约失效，拒绝启动子进程")
     index = execution["cursor"]
     if index >= len(execution["tasks"]):
         return None
@@ -329,7 +474,8 @@ def _start_batch_task(run_id, execution, lease_owner=None):
             raise RuntimeError("批次状态已变化，未能领取当前任务")
         task_cur = conn.execute(
             """UPDATE discovery_run_tasks SET status='starting', job_id=NULL, pid=NULL,
-               started_at=?, finished_at=NULL, error=''
+               started_at=?, finished_at=NULL, error='', next_retry_at=NULL,
+               attempt_count=attempt_count+1
                WHERE run_id=? AND task_index=? AND status IN ('queued','interrupted')""",
             (started_at.isoformat(), run_id, index),
         )
@@ -337,6 +483,23 @@ def _start_batch_task(run_id, execution, lease_owner=None):
             conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
                          ("子任务状态异常，批次已暂停，请检查任务明细。", run_id))
             raise RuntimeError("子任务未处于可领取状态")
+        task_row = conn.execute(
+            "SELECT id,attempt_count FROM discovery_run_tasks WHERE run_id=? AND task_index=?",
+            (run_id, index),
+        ).fetchone()
+        conn.execute("""
+            INSERT INTO discovery_task_attempts
+                (id,task_id,attempt_number,status,started_at)
+            VALUES(?,?,?,?,?)
+        """, (uuid.uuid4().hex, task_row["id"], task_row["attempt_count"], "starting",
+              started_at.isoformat()))
+    if lease_owner and not _renew_worker_lease(lease_owner):
+        with connect() as conn:
+            conn.execute("UPDATE discovery_run_tasks SET status='interrupted', finished_at=?, error=? WHERE run_id=? AND task_index=? AND status='starting'",
+                         (_now(), "租约在启动前失效，未启动子进程。", run_id, index))
+            conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
+                         ("Worker 租约失效，未启动子进程。", run_id))
+        raise RuntimeError("全局 Worker 租约失效，启动已取消")
     try:
         job = start_job({"platform": task["platform"], "mode": "search",
                          "keywords": task["query_term"], "max_posts": 30,
@@ -416,7 +579,7 @@ def execute_discovery_batch(run_id, platforms=None, max_tasks=100):
             "notes": "任务已持久化，由持有全局租约的后台 worker 串行领取。"}
 
 
-def _refresh_discovery_run_locked(run_id):
+def _refresh_discovery_run_locked(run_id, lease_owner=None):
     with connect() as conn:
         row = conn.execute("SELECT * FROM discovery_runs WHERE id=?", (run_id,)).fetchone()
         if not row:
@@ -443,6 +606,38 @@ def _refresh_discovery_run_locked(run_id):
     if job["status"] == "running":
         return {"id": run_id, "status": "running", "job": job,
                 "notes": f"平台搜索执行中：{execution.get('platform')} · {execution.get('query_term')}"}
+    if job["status"] != "succeeded" and execution.get("batch"):
+        with connect() as conn:
+            task_row = conn.execute(
+                "SELECT * FROM discovery_run_tasks WHERE run_id=? AND task_index=?",
+                (run_id, execution.get("cursor", 0)),
+            ).fetchone()
+        if task_row:
+            classification = {
+                "code": job.get("error_code") or "COLLECTION_UNKNOWN",
+                "category": job.get("error_category") or "unknown",
+                "message": job.get("error_message") or f"采集任务退出码：{job.get('exit_code', 'unknown')}",
+                "retryable": bool(job.get("retryable", False)),
+                "manual_intervention": bool(job.get("manual_intervention", False)),
+            }
+            if classification["retryable"] and int(task_row["attempt_count"] or 0) < int(task_row["max_attempts"] or _DEFAULT_MAX_ATTEMPTS):
+                return _schedule_retry(run_id, execution, task_row, job, classification)
+            final_status = "blocked" if classification["manual_intervention"] else "failed"
+            with connect() as conn:
+                conn.execute("""
+                    UPDATE discovery_run_tasks SET status=?, finished_at=?, error=?, error_code=?,
+                        retryable=?, last_error_at=?, next_retry_at=NULL
+                    WHERE run_id=? AND task_index=? AND status='running'
+                """, (final_status, _now(), classification["message"][:2000],
+                      classification["code"], int(classification["retryable"]), _now(),
+                      run_id, execution.get("cursor", 0)))
+                conn.execute("""
+                    UPDATE discovery_task_attempts SET status=?, finished_at=?, job_id=?, pid=?,
+                        exit_code=?, error_code=?, error_message=?, retryable=?
+                    WHERE task_id=? AND attempt_number=?
+                """, (final_status, _now(), job.get("id"), job.get("pid"), job.get("exit_code"),
+                      classification["code"], classification["message"][:2000],
+                      int(classification["retryable"]), task_row["id"], task_row["attempt_count"]))
     imported_count = 0
     if job["status"] == "succeeded":
         items = _import_discovery_exports(execution["platform"], execution["query_term"],
@@ -452,11 +647,23 @@ def _refresh_discovery_run_locked(run_id):
     if execution.get("batch"):
         with connect() as conn:
             conn.execute("""UPDATE discovery_run_tasks SET status=?, finished_at=?, result_count=?, error=?
-                WHERE run_id=? AND task_index=?""",
+                WHERE run_id=? AND task_index=? AND status='running'""",
                 ("succeeded" if job["status"] == "succeeded" else "failed", _now(),
                  imported_count, "" if job["status"] == "succeeded" else f"采集任务退出码：{job.get('exit_code', 'unknown')}",
                  run_id, execution.get("cursor", 0)))
         if job["status"] == "succeeded":
+            with connect() as conn:
+                task_row = conn.execute(
+                    "SELECT id,attempt_count FROM discovery_run_tasks WHERE run_id=? AND task_index=?",
+                    (run_id, execution.get("cursor", 0)),
+                ).fetchone()
+                if task_row:
+                    conn.execute("""
+                        UPDATE discovery_task_attempts SET status='succeeded', finished_at=?,
+                            job_id=?, pid=?, exit_code=?
+                        WHERE task_id=? AND attempt_number=?
+                    """, (_now(), job.get("id"), job.get("pid"), job.get("exit_code"),
+                          task_row["id"], task_row["attempt_count"]))
             execution["completed"] += 1
         else:
             execution["failed"] += 1
@@ -464,7 +671,7 @@ def _refresh_discovery_run_locked(run_id):
         execution.pop("job_id", None)
         if execution["cursor"] < len(execution["tasks"]):
             try:
-                next_job = _start_batch_task(run_id, execution)
+                next_job = _start_batch_task(run_id, execution, lease_owner=lease_owner)
             except RuntimeError as exc:
                 notes = f"批量任务暂停：{exc}"
                 with connect() as conn:
@@ -497,9 +704,25 @@ def _refresh_discovery_run_locked(run_id):
 
 
 
-def refresh_discovery_run(run_id):
-    with _refresh_lock:
-        return _refresh_discovery_run_locked(run_id)
+def refresh_discovery_run(run_id, lease_owner=None):
+    temporary_owner = None
+    if lease_owner is None:
+        temporary_owner = f"status-{uuid.uuid4().hex}"
+        if not _claim_worker_lease(temporary_owner):
+            with connect() as conn:
+                row = conn.execute("SELECT id,status,result_count,notes FROM discovery_runs WHERE id=?", (run_id,)).fetchone()
+            return dict(row) if row else None
+        lease_owner = temporary_owner
+    try:
+        if not _renew_worker_lease(lease_owner):
+            raise RuntimeError("Worker 租约已丢失，拒绝推进任务状态")
+        with _refresh_lock:
+            if not _renew_worker_lease(lease_owner):
+                raise RuntimeError("Worker 租约已丢失，拒绝推进任务状态")
+            return _refresh_discovery_run_locked(run_id, lease_owner=lease_owner)
+    finally:
+        if temporary_owner:
+            _release_worker_lease(temporary_owner)
 
 
 def resume_discovery_batch(run_id):
@@ -564,7 +787,26 @@ def start_discovery_worker():
                     if not _renew_worker_lease(_worker_id):
                         _worker_stop.wait(1)
                         continue
+                    now_iso = _now()
+                    now_epoch = datetime.now(UTC).timestamp()
                     with connect() as conn:
+                        due = conn.execute("""
+                            SELECT r.id, t.platform FROM discovery_runs r
+                            JOIN discovery_run_tasks t ON t.run_id=r.id
+                              AND t.task_index=json_extract(r.execution_json,'$.cursor')
+                            WHERE r.status='retry_wait' AND t.status='retry_wait'
+                              AND t.next_retry_at IS NOT NULL AND t.next_retry_at<=?
+                        """, (now_iso,)).fetchall()
+                        for item in due:
+                            cooldown = conn.execute(
+                                "SELECT cooldown_until FROM discovery_platform_cooldowns WHERE platform=?",
+                                (item["platform"],),
+                            ).fetchone()
+                            if not cooldown or float(cooldown["cooldown_until"])<=now_epoch:
+                                conn.execute("UPDATE discovery_run_tasks SET status='queued' WHERE run_id=? AND status='retry_wait'",
+                                             (item["id"],))
+                                conn.execute("UPDATE discovery_runs SET status='queued', notes=? WHERE id=? AND status='retry_wait'",
+                                             ("退避时间与平台冷却均已结束，重新进入队列。", item["id"]))
                         queued = conn.execute("SELECT id,execution_json FROM discovery_runs WHERE status='queued' ORDER BY started_at").fetchall()
                         rows = conn.execute("SELECT id FROM discovery_runs WHERE status='running' ORDER BY started_at").fetchall()
                     for queued_run in queued:
@@ -573,6 +815,9 @@ def start_discovery_worker():
                         try:
                             execution = json.loads(queued_run["execution_json"] or "{}")
                             if execution.get("batch") and not execution.get("job_id"):
+                                current = execution.get("tasks", [])[execution.get("cursor", 0)]
+                                if _cooldown_remaining(current["platform"]) > 0:
+                                    continue
                                 _start_batch_task(queued_run["id"], execution, lease_owner=_worker_id)
                         except (RuntimeError, OSError, ValueError) as exc:
                             with connect() as conn:
@@ -582,7 +827,7 @@ def start_discovery_worker():
                         if _worker_stop.is_set() or not _renew_worker_lease(_worker_id):
                             break
                         try:
-                            refresh_discovery_run(row["id"])
+                            refresh_discovery_run(row["id"], lease_owner=_worker_id)
                         except (RuntimeError, OSError, ValueError):
                             continue
                 except (RuntimeError, OSError, ValueError):
