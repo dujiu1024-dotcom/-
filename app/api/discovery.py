@@ -115,8 +115,10 @@ def discovery_run_tasks(run_id: str):
         exists = conn.execute("SELECT 1 FROM discovery_runs WHERE id=?", (run_id,)).fetchone()
         if not exists:
             raise HTTPException(404, "发现批次不存在")
-        rows = conn.execute("SELECT task_index,platform,query_term,query_index,status,job_id,started_at,finished_at,result_count,error FROM discovery_run_tasks WHERE run_id=? ORDER BY task_index",
-                            (run_id,)).fetchall()
+        rows = conn.execute("""SELECT task_index,platform,query_term,query_index,status,job_id,
+            started_at,finished_at,result_count,error,attempt_count,max_attempts,next_retry_at,
+            last_error_at,error_code,retryable,retry_after_seconds,log_path
+            FROM discovery_run_tasks WHERE run_id=? ORDER BY task_index""", (run_id,)).fetchall()
     return {"items": [dict(row) for row in rows], "total": len(rows)}
 
 

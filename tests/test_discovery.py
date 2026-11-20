@@ -310,7 +310,8 @@ def test_discovery_worker_lease_loss_keeps_started_job_recoverable(tmp_path, mon
         execution = json.loads(conn.execute(
             "SELECT execution_json FROM discovery_runs WHERE id=?", (run["id"],)
         ).fetchone()[0])
-    monkeypatch.setattr(discovery, "_renew_worker_lease", lambda owner_id: False)
+    renew_results = iter([True, True, False])
+    monkeypatch.setattr(discovery, "_renew_worker_lease", lambda owner_id: next(renew_results))
 
     with pytest.raises(RuntimeError, match="租约失效"):
         discovery._start_batch_task(run["id"], execution, lease_owner="stale-worker")
@@ -328,3 +329,132 @@ def test_discovery_worker_lease_loss_keeps_started_job_recoverable(tmp_path, mon
     assert task["status"] == "interrupted"
     assert task["job_id"] == "lease-lost-job"
     assert task["pid"] == 9876
+
+
+
+def test_retry_after_and_exponential_backoff_are_bounded():
+    from app.services import discovery
+
+    assert discovery._parse_retry_after("120") == 120
+    assert discovery._retry_delay(1, retry_after=120, jitter=0) == 120
+    assert discovery._retry_delay(2, jitter=0) == 30
+    assert discovery._retry_delay(20, jitter=0) == discovery._BACKOFF_MAX_SECONDS
+    assert discovery._parse_retry_after("999999") == discovery._RETRY_AFTER_MAX_SECONDS
+
+
+def test_rate_limit_retry_persists_attempt_and_platform_cooldown(tmp_path, monkeypatch):
+    import json
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "retry-rate-limit.sqlite3")
+    monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
+    job = {"id": "rate-job", "pid": 321, "status": "running"}
+    monkeypatch.setattr(discovery, "start_job", lambda payload: job)
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "限流重试"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "限流策略", "topic": "测试", "terms": ["关键词"], "platforms": ["bilibili"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+    client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={})
+    with db.connect() as conn:
+        execution = json.loads(conn.execute(
+            "SELECT execution_json FROM discovery_runs WHERE id=?", (run["id"],)
+        ).fetchone()[0])
+    discovery._start_batch_task(run["id"], execution)
+    failed_job = {
+        "id": "rate-job", "pid": 321, "status": "failed", "exit_code": 1,
+        "error_category": "rate_limited", "error_code": "COLLECTION_RATE_LIMITED",
+        "error_message": "HTTP 429 Too Many Requests", "retryable": True,
+        "manual_intervention": False, "retry_after": "120",
+    }
+    monkeypatch.setattr(discovery, "get_job", lambda job_id: failed_job)
+    result = discovery.refresh_discovery_run(run["id"])
+    assert result["status"] == "retry_wait"
+    assert result["retry_in_seconds"] >= 120
+    assert discovery._cooldown_remaining("bilibili") >= 120
+    with db.connect() as conn:
+        task = conn.execute(
+            "SELECT status,attempt_count,max_attempts,error_code,next_retry_at FROM discovery_run_tasks WHERE run_id=?",
+            (run["id"],),
+        ).fetchone()
+        attempts = conn.execute(
+            "SELECT COUNT(*) AS count FROM discovery_task_attempts WHERE task_id=("
+            "SELECT id FROM discovery_run_tasks WHERE run_id=?)", (run["id"],)
+        ).fetchone()["count"]
+    assert task["status"] == "retry_wait"
+    assert task["attempt_count"] == 1
+    assert task["max_attempts"] == 4
+    assert task["error_code"] == "COLLECTION_RATE_LIMITED"
+    assert task["next_retry_at"]
+    assert attempts == 1
+
+
+def test_non_retryable_auth_failure_is_blocked_without_retry(tmp_path, monkeypatch):
+    import json
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "retry-auth.sqlite3")
+    monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(discovery, "start_job", lambda payload: {"id": "auth-job", "pid": 88})
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "登录失效"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "登录策略", "topic": "测试", "terms": ["关键词"], "platforms": ["bilibili"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+    client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={})
+    with db.connect() as conn:
+        execution = json.loads(conn.execute(
+            "SELECT execution_json FROM discovery_runs WHERE id=?", (run["id"],)
+        ).fetchone()[0])
+    discovery._start_batch_task(run["id"], execution)
+    monkeypatch.setattr(discovery, "get_job", lambda job_id: {
+        "id": "auth-job", "status": "failed", "exit_code": 1,
+        "error_category": "authentication_required", "error_code": "COLLECTION_AUTH_REQUIRED",
+        "error_message": "登录失效", "retryable": False, "manual_intervention": True,
+    })
+    result = discovery.refresh_discovery_run(run["id"])
+    assert result["status"] == "partial"
+    with db.connect() as conn:
+        task = conn.execute(
+            "SELECT status,attempt_count,next_retry_at FROM discovery_run_tasks WHERE run_id=?",
+            (run["id"],),
+        ).fetchone()
+    assert task["status"] == "blocked"
+    assert task["attempt_count"] == 1
+    assert task["next_retry_at"] is None
+
+
+def test_worker_refuses_to_start_after_lease_loss(tmp_path, monkeypatch):
+    import json
+    import pytest
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "retry-lease-loss.sqlite3")
+    called = {"start": 0}
+    monkeypatch.setattr(discovery, "start_job", lambda payload: called.__setitem__("start", 1))
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "租约前置检查"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "租约策略", "topic": "测试", "terms": ["关键词"], "platforms": ["bilibili"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+    client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={})
+    with db.connect() as conn:
+        execution = json.loads(conn.execute(
+            "SELECT execution_json FROM discovery_runs WHERE id=?", (run["id"],)
+        ).fetchone()[0])
+    monkeypatch.setattr(discovery, "_renew_worker_lease", lambda owner_id: False)
+    with pytest.raises(RuntimeError, match="租约失效"):
+        discovery._start_batch_task(run["id"], execution, lease_owner="stale-worker")
+    assert called["start"] == 0
+    with db.connect() as conn:
+        task = conn.execute(
+            "SELECT status FROM discovery_run_tasks WHERE run_id=? AND task_index=0",
+            (run["id"],),
+        ).fetchone()
+    assert task["status"] == "queued"
