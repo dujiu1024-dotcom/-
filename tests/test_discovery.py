@@ -152,7 +152,12 @@ def test_discovery_batch_runs_platforms_sequentially(tmp_path, monkeypatch):
     started = client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={})
     assert started.status_code == 200
     assert started.json()["task_count"] == 2
+    assert started.json()["status"] == "queued"
     assert started.json()["current_task"]["platform"] == "bilibili"
+    discovery._start_batch_task(run["id"], {"batch": True, "tasks": [
+        {"platform": "bilibili", "query_term": "AI PPT", "query_index": 0},
+        {"platform": "zhihu", "query_term": "AI PPT", "query_index": 0}
+    ], "cursor": 0, "completed": 0, "failed": 0})
     duplicate = client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={})
     assert duplicate.status_code == 409
     assert client.get(f"/api/v1/discovery/runs/{run['id']}/tasks").json()["total"] == 2
@@ -218,7 +223,12 @@ def test_discovery_batch_persists_tasks_and_can_resume_after_restart(tmp_path, m
     run_id = run["id"]
 
     started = client.post(f"/api/v1/discovery/runs/{run_id}/execute-batch", json={}).json()
-    assert started["status"] == "running"
+    assert started["status"] == "queued"
+    with db.connect() as conn:
+        execution = __import__("json").loads(conn.execute(
+            "SELECT execution_json FROM discovery_runs WHERE id=?", (run_id,)
+        ).fetchone()[0])
+    discovery._start_batch_task(run_id, execution)
     with db.connect() as conn:
         tasks = conn.execute("SELECT status,job_id FROM discovery_run_tasks WHERE run_id=? ORDER BY task_index",
                              (run_id,)).fetchall()
@@ -235,5 +245,37 @@ def test_discovery_batch_persists_tasks_and_can_resume_after_restart(tmp_path, m
     assert task["status"] == "interrupted"
 
     resumed = client.post(f"/api/v1/discovery/runs/{run_id}/resume").json()
-    assert resumed["status"] == "running"
-    assert resumed["job_id"] == "persisted-2"
+    assert resumed["status"] == "queued"
+    assert resumed["current_task"]["query_term"] == "词一"
+    with db.connect() as conn:
+        execution = __import__("json").loads(conn.execute(
+            "SELECT execution_json FROM discovery_runs WHERE id=?", (run_id,)
+        ).fetchone()[0])
+    discovery._start_batch_task(run_id, execution)
+    with db.connect() as conn:
+        current = conn.execute(
+            "SELECT job_id,status FROM discovery_run_tasks WHERE run_id=? AND task_index=0",
+            (run_id,)
+        ).fetchone()
+    assert current["status"] == "running"
+    assert current["job_id"] == "persisted-2"
+
+
+
+def test_discovery_worker_lease_is_exclusive_and_expires(tmp_path, monkeypatch):
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-lease.sqlite3")
+    discovery._ensure()
+    assert discovery._claim_worker_lease("worker-a", lease_seconds=60) is True
+    assert discovery._claim_worker_lease("worker-b", lease_seconds=60) is False
+    assert discovery._renew_worker_lease("worker-b", lease_seconds=60) is False
+    assert discovery._renew_worker_lease("worker-a", lease_seconds=60) is True
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE discovery_worker_leases SET lease_until=0 WHERE lease_name='global'"
+        )
+    assert discovery._claim_worker_lease("worker-b", lease_seconds=60) is True
+    assert discovery._renew_worker_lease("worker-a", lease_seconds=60) is False
