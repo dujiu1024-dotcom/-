@@ -9,7 +9,9 @@ from app.services.demand import classify
 from app.services.llm import analyze_batch, embed_texts, provider_status
 from app.storage.db import CommentFilters, connect, get_recent_hours, iter_comments
 
-PROMPT_VERSION = "demand-analysis-v1"\n\nTOKEN_RE = re.compile(r"[a-zA-Z0-9_+#.-]{2,}|[\u4e00-\u9fff]{2,}")
+PROMPT_VERSION = "demand-analysis-v1"
+
+TOKEN_RE = re.compile(r"[a-zA-Z0-9_+#.-]{2,}|[\u4e00-\u9fff]{2,}")
 
 
 def _tokens(text: str) -> set[str]:
