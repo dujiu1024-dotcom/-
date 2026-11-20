@@ -283,3 +283,43 @@ def test_merge_candidate_moves_all_source_evidence_to_target(tmp_path, monkeypat
     assert merged["status"] == "merged"
     target = get_candidate(target_id)
     assert {row["source_ref"] for row in target["evidence"]} == {"source-a", "source-b"}
+
+
+def test_low_quality_noise_is_not_expanded(tmp_path, monkeypatch):
+    from app.models import CommentRecord
+    from app.services import keywords
+    from app.storage import db
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "noise.sqlite3")
+    db.upsert_comment(CommentRecord(platform="bilibili", comment_id="noise-1",
+        comment_text="路过，哈哈哈", comment_created_at=datetime.now(UTC), raw={}))
+    monkeypatch.setattr(keywords, "provider_status", lambda: {"configured": False})
+    result = keywords.generate_candidates("noise-project")
+    assert result["created"] == 0
+    assert result["sources_seen"] == 0
+
+
+def test_verification_execution_failure_is_persisted(tmp_path, monkeypatch):
+    import pytest
+    from app.storage import db
+    from app.services import discovery, keywords
+    from app.services.collection_library import create_project
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "verification-failure.sqlite3")
+    discovery._ensure()
+    project_id = create_project("失败验证项目")["id"]
+    now = datetime.now(UTC).isoformat()
+    with db.connect() as conn:
+        conn.execute("""INSERT INTO keyword_candidates
+            (project_id,keyword,normalized_keyword,category,source_type,source_text,
+             generation_reason,status,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (project_id, "自动整理工具", "自动整理工具", "场景表达", "comment",
+             "需要自动整理工具", "来源明确", "pending", now, now))
+        candidate_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    monkeypatch.setattr(discovery, "execute_discovery_batch",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("crawler unavailable")))
+    with pytest.raises(RuntimeError, match="crawler unavailable"):
+        keywords.start_verification_batch(project_id, "bilibili", [candidate_id])
+    with db.connect() as conn:
+        status = conn.execute("SELECT status FROM keyword_verification_batches").fetchone()["status"]
+    assert status == "failed"
