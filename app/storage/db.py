@@ -1,9 +1,63 @@
 import json
 import sqlite3
-from datetime import UTC, datetime
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from app.config import DATABASE_PATH, DEFAULT_RECENT_HOURS
 from app.models import CommentRecord
+
+
+@dataclass(frozen=True)
+class CommentFilters:
+    """Normalized filters shared by comment COUNT, page and batch queries."""
+
+    since_hours: int | None = None
+    platform: str | None = None
+    include_unknown_time: bool = False
+
+
+def _normalize_comment_filters(
+    filters: CommentFilters | Mapping[str, object] | None,
+) -> CommentFilters:
+    if filters is None:
+        return CommentFilters()
+    if isinstance(filters, CommentFilters):
+        return filters
+    if isinstance(filters, Mapping):
+        return CommentFilters(
+            since_hours=filters.get("since_hours"),  # type: ignore[arg-type]
+            platform=filters.get("platform"),  # type: ignore[arg-type]
+            include_unknown_time=bool(filters.get("include_unknown_time", False)),
+        )
+    raise TypeError("filters must be CommentFilters, a mapping, or None")
+
+
+def _comment_where(
+    filters: CommentFilters | Mapping[str, object] | None,
+) -> tuple[str, list[object]]:
+    normalized = _normalize_comment_filters(filters)
+    clauses: list[str] = []
+    params: list[object] = []
+
+    if normalized.platform:
+        clauses.append("platform = ?")
+        params.append(normalized.platform)
+
+    if normalized.since_hours is not None:
+        if normalized.since_hours < 0:
+            raise ValueError("since_hours must be non-negative")
+        cutoff = datetime.now(UTC) - timedelta(hours=normalized.since_hours)
+        time_clause = "julianday(comment_created_at) >= julianday(?)"
+        params.append(cutoff.isoformat())
+        if normalized.include_unknown_time:
+            time_clause = (
+                f"({time_clause} OR comment_created_at IS NULL "
+                "OR trim(comment_created_at) = '' OR julianday(comment_created_at) IS NULL)"
+            )
+        clauses.append(time_clause)
+
+    return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
 
 
 def connect() -> sqlite3.Connection:
@@ -119,31 +173,63 @@ def get_recent_hours() -> int:
         return DEFAULT_RECENT_HOURS
 
 
+def count_comments(
+    filters: CommentFilters | Mapping[str, object] | None = None,
+) -> int:
+    """Count comments in SQL using the exact same predicates as page/iterator queries."""
+    where, params = _comment_where(filters)
+    with connect() as conn:
+        row = conn.execute(f"SELECT COUNT(*) AS total FROM comments{where}", params).fetchone()
+        return int(row["total"])
+
+
+def page_comments(
+    filters: CommentFilters | Mapping[str, object] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """Return one deterministically ordered page; filtering and pagination stay in SQLite."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    where, params = _comment_where(filters)
+    sql = (
+        "SELECT * FROM comments" + where
+        + " ORDER BY imported_at DESC, platform ASC, comment_id ASC LIMIT ? OFFSET ?"
+    )
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(sql, [*params, limit, offset]).fetchall()]
+
+
+def iter_comments(
+    filters: CommentFilters | Mapping[str, object] | None = None,
+    batch_size: int = 250,
+) -> Iterator[dict]:
+    """Stream matching comments in bounded batches without materializing the full result set."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    where, params = _comment_where(filters)
+    sql = (
+        "SELECT * FROM comments" + where
+        + " ORDER BY imported_at DESC, platform ASC, comment_id ASC"
+    )
+    conn = connect()
+    try:
+        cursor = conn.execute(sql, params)
+        while batch := cursor.fetchmany(batch_size):
+            for row in batch:
+                yield dict(row)
+    finally:
+        conn.close()
+
+
 def list_comments(since_hours: int | None = None, platform: str | None = None,
                   include_unknown_time: bool = False) -> list[dict]:
-    clauses, params = [], []
-    if platform:
-        clauses.append("platform = ?")
-        params.append(platform)
-    sql = "SELECT * FROM comments" + (" WHERE " + " AND ".join(clauses) if clauses else "")
-    sql += " ORDER BY imported_at DESC"
-    with connect() as conn:
-        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
-    if since_hours is not None:
-        cutoff_dt = datetime.fromtimestamp(datetime.now(UTC).timestamp() - since_hours * 3600, UTC)
-        filtered = []
-        for row in rows:
-            value = row["comment_created_at"]
-            if not value:
-                if include_unknown_time:
-                    filtered.append(row)
-                continue
-            try:
-                dt = datetime.fromisoformat(value)
-                if dt.tzinfo is not None and dt.astimezone(UTC) >= cutoff_dt:
-                    filtered.append(row)
-            except ValueError:
-                if include_unknown_time:
-                    filtered.append(row)
-        rows = filtered
-    return rows
+    """Backward-compatible full-list wrapper; new callers should use page/iterator APIs."""
+    filters = CommentFilters(
+        since_hours=since_hours,
+        platform=platform,
+        include_unknown_time=include_unknown_time,
+    )
+    return list(iter_comments(filters, batch_size=500))
