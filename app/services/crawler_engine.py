@@ -111,8 +111,13 @@ def _watch_job(job_id: str) -> None:
 def list_jobs() -> list[dict[str, Any]]:
     with _lock:
         for job_id, process in list(_processes.items()):
-            if process.poll() is not None:
-                _watch_job(job_id)
+            code = process.poll()
+            if code is not None:
+                job = _jobs[job_id]
+                job["status"] = "succeeded" if code == 0 else "failed"
+                job["exit_code"] = code
+                job["finished_at"] = _now()
+                _processes.pop(job_id, None)
         return [dict(job) for job in sorted(_jobs.values(), key=lambda item: item["started_at"], reverse=True)]
 
 
@@ -145,7 +150,7 @@ def import_latest_exports() -> dict[str, int]:
         imported = 0
         folder = root / platform
         if folder.exists():
-            for path in sorted(folder.glob("*.jsonl")):
+            for path in sorted(folder.rglob("*.jsonl")):
                 for index, row in enumerate(read_export(path), start=1):
                     record = normalize_row(row, platform, index)
                     if record:
