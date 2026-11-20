@@ -149,7 +149,8 @@ def review_candidate(candidate_id: int, action: str, note: str = "",
             (candidate_id, action, reviewer[:100], note[:1000], target_candidate_id, now))
         if action == "reject":
             try:
-                blacklist = json.loads(get_setting("keyword_blacklist", "[]") or "[]")
+                saved = conn.execute("SELECT value FROM app_settings WHERE key='keyword_blacklist'").fetchone()
+                blacklist = json.loads(saved["value"] if saved else "[]")
             except (TypeError, ValueError):
                 blacklist = []
             blacklist = sorted(set(blacklist) | {row["normalized_keyword"]})
