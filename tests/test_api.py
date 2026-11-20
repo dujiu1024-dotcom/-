@@ -9,3 +9,13 @@ def test_health_and_platforms():
     platforms = client.get("/api/v1/platforms").json()
     codes = {item["code"] for item in platforms}
     assert {"xhs", "douyin", "kuaishou", "weibo", "bilibili", "toutiao", "wechat"} <= codes
+
+def test_dashboard_and_engine_status():
+    client = TestClient(app)
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "社交平台需求雷达" in page.text
+    status = client.get("/api/v1/engine/status").json()
+    assert "installed" in status
+    sessions = client.get("/api/v1/sessions").json()
+    assert len(sessions) == 7
