@@ -28,6 +28,11 @@ def dashboard():
     return FileResponse(Path(__file__).parent / "static" / "index.html")
 
 
+@app.get("/platform-capabilities", include_in_schema=False)
+def platform_capabilities_page():
+    return FileResponse(Path(__file__).parent / "static" / "platform-capabilities.html")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": APP_NAME}
