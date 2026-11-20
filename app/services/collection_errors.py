@@ -66,13 +66,13 @@ ERRORS: dict[str, dict[str, Any]] = {
 }
 
 _PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("rate_limited", (r"\\b429\\b", r"too many requests", r"rate.?limit", r"频率过高", r"访问频繁", r"请求过于频繁")),
+    ("rate_limited", (r"\b429\b", r"too many requests", r"rate.?limit", r"频率过高", r"访问频繁", r"请求过于频繁")),
     ("captcha_required", (r"captcha", r"验证码", r"滑块验证", r"安全验证")),
-    ("authentication_required", (r"\\b401\\b", r"unauthorized", r"未登录", r"登录失效", r"请先登录", r"cookie.*expired", r"登录状态")),
-    ("access_denied", (r"\\b403\\b", r"forbidden", r"access denied", r"permission denied", r"无权访问", r"权限不足", r"拒绝访问")),
-    ("timeout", (r"timed?\\s*out", r"timeout", r"超时", r"readtimeout", r"connecttimeout")),
+    ("authentication_required", (r"\b401\b", r"unauthorized", r"未登录", r"登录失效", r"请先登录", r"cookie.*expired", r"登录状态")),
+    ("access_denied", (r"\b403\b", r"forbidden", r"access denied", r"permission denied", r"无权访问", r"权限不足", r"拒绝访问")),
+    ("timeout", (r"timed?\s*out", r"timeout", r"超时", r"readtimeout", r"connecttimeout")),
     ("network_error", (r"connectionerror", r"connection reset", r"connection refused", r"name or service not known", r"dns", r"网络不可达", r"连接中断", r"连接失败")),
-    ("upstream_unavailable", (r"\\b5\\d\\d\\b", r"bad gateway", r"service unavailable", r"gateway timeout", r"服务器暂时不可用")),
+    ("upstream_unavailable", (r"\b5\d\d\b", r"bad gateway", r"service unavailable", r"gateway timeout", r"服务器暂时不可用")),
     ("invalid_request", (r"invalid argument", r"invalid url", r"unsupported platform", r"参数无效", r"不支持的平台")),
 )
 
