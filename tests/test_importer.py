@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import timezone
 from app.collectors.mediacrawler_import import normalize_row, _parse_datetime
 
 
