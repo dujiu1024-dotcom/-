@@ -289,7 +289,7 @@ def execute_discovery_run(run_id, platform, query_index=0):
         task = {"platform": platform, "query_term": terms[query_index],
                 "query_index": query_index}
         execution = {"batch": True, "tasks": [task], "cursor": 0,
-                     "completed": 0, "failed": 0, "created_at": _now()}
+                     "completed": 0, "failed": 0, "created_at": _now(), "max_posts": max(1, min(int(max_posts), 100))}
     with connect() as conn:
         cur = conn.execute(
             "UPDATE discovery_runs SET status='queued', execution_json=?, notes=? WHERE id=? AND status='prepared'",
@@ -339,7 +339,7 @@ def _start_batch_task(run_id, execution, lease_owner=None):
             raise RuntimeError("子任务未处于可领取状态")
     try:
         job = start_job({"platform": task["platform"], "mode": "search",
-                         "keywords": task["query_term"], "max_posts": 30,
+                         "keywords": task["query_term"], "max_posts": execution.get("max_posts", 30),
                          "max_comments_per_post": 0, "include_replies": False})
     except (RuntimeError, OSError, ValueError) as exc:
         with connect() as conn:
@@ -373,7 +373,7 @@ def _start_batch_task(run_id, execution, lease_owner=None):
     return job
 
 
-def execute_discovery_batch(run_id, platforms=None, max_tasks=100):
+def execute_discovery_batch(run_id, platforms=None, max_tasks=100, max_posts=30):
     with connect() as conn:
         row = conn.execute("""SELECT r.*, s.terms_json, s.platforms_json
             FROM discovery_runs r JOIN search_strategies s ON s.id=r.strategy_id
