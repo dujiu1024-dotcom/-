@@ -186,3 +186,45 @@ def test_rejected_keyword_updates_expansion_blacklist(tmp_path, monkeypatch):
     import json
     saved = json.loads(get_setting("keyword_blacklist", "[]"))
     assert candidate["normalized_keyword"] in saved
+
+
+def test_same_normalized_keyword_keeps_multiple_evidence_sources(tmp_path, monkeypatch):
+    from app.models import CommentRecord
+    from app.services import keywords
+    from app.storage import db
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "multi-evidence.sqlite3")
+    text = "有没有批量处理 Excel 的工具？"
+    for comment_id in ("source-a", "source-b"):
+        db.upsert_comment(CommentRecord(platform="bilibili", comment_id=comment_id,
+            comment_text=text, comment_created_at=datetime.now(UTC), raw={}))
+    monkeypatch.setattr(keywords, "provider_status", lambda: {"configured": False})
+    result = keywords.generate_candidates("project-multi")
+    assert result["created"] == 1
+    assert result["evidence_added"] == 2
+    listing = keywords.list_candidates("project-multi")
+    assert listing["items"][0]["evidence_count"] == 2
+    detail = keywords.get_candidate(listing["items"][0]["id"])
+    assert {item["source_comment_id"] for item in detail["evidence"]} == {"source-a", "source-b"}
+
+
+def test_llm_invalid_json_is_reported_as_unavailable(monkeypatch):
+    import pytest
+    from app.services import llm
+    monkeypatch.setattr(llm, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "LLM_MODEL", "test-model")
+    monkeypatch.setattr(llm, "_post", lambda *args, **kwargs: {
+        "choices": [{"message": {"content": "not-json"}}]
+    })
+    with pytest.raises(llm.LLMUnavailable, match="结构错误"):
+        llm.expand_keyword_batch([{"source_ref": "bilibili::c-1"}])
+
+
+def test_llm_failure_falls_back_to_rules(tmp_path, monkeypatch):
+    from app.services import keywords
+    from app.services.llm import LLMUnavailable
+    _insert_comment(monkeypatch, tmp_path)
+    monkeypatch.setattr(keywords, "provider_status", lambda: {"configured": True, "model": "test-model"})
+    monkeypatch.setattr(keywords, "expand_keyword_batch", lambda sources: (_ for _ in ()).throw(LLMUnavailable("timeout")))
+    result = keywords.generate_candidates("fallback-project")
+    assert result["generation_method"] == "rule_fallback"
+    assert result["created"] == 1
