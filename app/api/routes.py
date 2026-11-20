@@ -15,7 +15,7 @@ from app.services.crawler_engine import (
 from app.services.demand import demand_candidates
 from app.services.settings import get_settings, update_recent_hours
 from app.services.platform_capabilities import (
-    OPERATIONS, SEVEN_PLATFORMS, get_platform_capability,
+    SEVEN_PLATFORMS, get_platform_capability,
     list_capability_matrix, record_platform_verification,
 )
 from app.storage.db import get_recent_hours, list_comments, upsert_comment
