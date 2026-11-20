@@ -141,7 +141,7 @@ def test_verification_batch_records_metrics_and_threshold_decision(tmp_path, mon
                  published_at,query_term,fingerprint,status,created_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (f"content-{idx}", batch["run_id"], "bilibili", f"https://example.com/{idx}",
-                 "通用标题", body, "", "", None, "批量处理工具",
+                 "通用标题", body, f"作者-{idx}", f"https://author/{idx}", datetime.now(UTC).isoformat(), "批量处理工具",
                  f"fingerprint-{idx}", "new", now))
     monkeypatch.setattr(discovery, "refresh_discovery_run", lambda run_id: {"id": run_id, "status": "succeeded"})
     result = keywords.get_verification_batch(batch["batch_id"])
@@ -149,6 +149,10 @@ def test_verification_batch_records_metrics_and_threshold_decision(tmp_path, mon
     assert result["results"][0]["hit_count"] == 2
     assert result["results"][0]["valid_demand_count"] == 1
     assert result["results"][0]["duplicate_rate"] == 0.5
+    assert result["results"][0]["unique_author_count"] == 2
+    assert result["results"][0]["demand_rate"] == 0.5
+    assert result["results"][0]["platform_coverage"] > 0
+    assert result["results"][0]["freshness_hours"] is not None
     assert result["results"][0]["quality_pass"] is False
 
 
