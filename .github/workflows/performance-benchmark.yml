@@ -17,6 +17,7 @@ jobs:
       - name: Run 10k / 100k / 500k synthetic benchmarks
         run: python -m benchmarks.benchmark_comments --sizes 10000 100000 500000 --repetitions 5 --output benchmark-results.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: comment-performance-benchmark
           path: benchmark-results.json
