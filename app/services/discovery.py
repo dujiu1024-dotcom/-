@@ -170,12 +170,30 @@ def _content_from_row(row, platform, query_term):
     url = next((row.get(k) for k in ("content_url", "url", "share_url", "链接") if row.get(k)), "")
     content_id = next((row.get(k) for k in ("note_id", "aweme_id", "video_id", "bvid", "object_id", "id") if row.get(k)), "")
     if not url and content_id:
-        url = str(content_id)
+        content_paths = {
+            "xhs": f"https://www.xiaohongshu.com/explore/{content_id}",
+            "douyin": f"https://www.douyin.com/video/{content_id}",
+            "kuaishou": f"https://www.kuaishou.com/short-video/{content_id}",
+            "bilibili": f"https://www.bilibili.com/video/{content_id}",
+            "weibo": f"https://weibo.com/{content_id}",
+            "tieba": f"https://tieba.baidu.com/p/{content_id}",
+            "zhihu": f"https://www.zhihu.com/question/{content_id}",
+        }
+        url = content_paths.get(platform, str(content_id))
     author = row.get("nickname") or row.get("author_name") or row.get("user_name") or row.get("name") or ""
     author_url = row.get("author_url") or row.get("profile_url") or row.get("user_url") or ""
     author_id = row.get("user_id") or row.get("sec_uid") or row.get("mid") or row.get("uid")
     if not author_url and author_id:
-        author_url = str(author_id)
+        author_paths = {
+            "xhs": f"https://www.xiaohongshu.com/user/profile/{author_id}",
+            "douyin": f"https://www.douyin.com/user/{author_id}",
+            "kuaishou": f"https://www.kuaishou.com/profile/{author_id}",
+            "bilibili": f"https://space.bilibili.com/{author_id}",
+            "weibo": f"https://weibo.com/u/{author_id}",
+            "tieba": f"https://tieba.baidu.com/home/main?id={author_id}",
+            "zhihu": f"https://www.zhihu.com/people/{author_id}",
+        }
+        author_url = author_paths.get(platform, str(author_id))
     if not (title or body) or not url:
         return None
     return {
