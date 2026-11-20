@@ -8,7 +8,11 @@
 <label>采集方式</label><select id="mode"><option value="search">关键词搜索</option><option value="detail">指定内容链接 / ID</option><option value="creator">博主主页</option></select><label id="targetLabel">关键词（多个用英文逗号分隔）</label><input id="target" placeholder="例如：AI工具,效率软件"><label>每次采集内容数（1-100）</label><input id="posts" type="number" value="20" min="1" max="100"><label>每条内容评论数（1-1000）</label><input id="comments" type="number" value="100" min="1" max="1000"><label><input id="replies" type="checkbox" checked style="min-width:auto;flex:none"> 同时采集二级回复</label><button id="start">启动可见浏览器采集</button><p id="taskMsg" class="muted">一次只运行一个任务；请保持浏览器窗口可见并完成平台要求的登录验证。</p></section>
 <section><h2>时间窗口与分析模型</h2><div class="row"><label>默认评论时间窗口（小时）</label><input id="hours" type="number" min="1" max="8760" value="72"><button id="saveHours">保存窗口</button></div><div id="llmStatus" class="muted">分析模型状态读取中</div><p class="muted">配置 LLM_API_KEY、LLM_MODEL 可启用语义分析；配置 LLM_EMBEDDING_MODEL 可启用向量聚类。未配置时使用本地规则与文本相似度降级。</p></section><section><h2>扩展平台采集</h2><div class="row"><select id="externalPlatform"><option value="toutiao">今日头条</option><option value="youtube">YouTube</option><option value="reddit">Reddit</option><option value="tiktok">TikTok</option><option value="twitter">X / Twitter</option><option value="instagram">Instagram</option><option value="threads">Threads</option><option value="linkedin">LinkedIn</option><option value="telegram">Telegram</option><option value="wechat_mp">微信公众号文章</option><option value="wechat_channels">微信视频号</option><option value="quora">Quora</option></select><select id="externalMode"><option value="search">搜索</option><option value="comments">评论 / 回复</option><option value="detail">指定内容</option></select><input id="externalQuery" placeholder="关键词、内容 ID 或链接"><button id="externalStart">运行扩展采集</button></div><pre id="externalResult">扩展采集结果</pre></section><section><h2>账号会话</h2><div id="sessions" class="muted">加载中…</div><p class="muted">会话目录存在不等于登录有效。失效后重新启动对应平台任务并扫码即可。</p></section></div>
 <section><div class="row" style="justify-content:space-between"><h2>任务记录</h2><button class="secondary" id="refresh">刷新</button></div><div id="jobs"></div><pre id="logs">选择任务查看运行日志。</pre></section>
-<section><div class="row" style="justify-content:space-between"><h2>评论与需求</h2><button class="secondary" id="import">导入采集结果并刷新</button></div><div id="stats" class="muted">尚未加载</div><div class="row"><button class="secondary" id="comments">查看当前窗口评论</button><button class="secondary" id="analyze">运行语义分析 / 聚类</button><button class="secondary" id="demands">查看需求强度排名</button><button class="secondary" id="trends">查看需求趋势</button></div><pre id="results">结果将在这里显示。</pre></section></main>
+<section><div class="row" style="justify-content:space-between"><h2>评论与需求</h2><button class="secondary" id="import">导入采集结果并刷新</button></div><div id="stats" class="muted">尚未加载</div><div class="row"><button class="secondary" id="comments">查看当前窗口评论</button><button class="secondary" id="analyze">运行语义分析 / 聚类</button><button class="secondary" id="demands">查看需求强度排名</button><button class="secondary" id="trends">查看需求趋势</button></div><pre id="results">结果将在这里显示。</pre></section>
+<section id="feedbackWorkspace"><div class="row" style="justify-content:space-between"><h2>人工反馈标注</h2><span id="feedbackTarget" class="muted">从评论或需求簇详情选择“标注”</span></div>
+<div class="grid"><div><label>标注结论</label><select id="feedbackLabel"><option value="valid_demand">有效需求</option><option value="non_demand">非需求 / 误判</option><option value="category_correction">修正需求类别</option><option value="merge">重复需求合并</option><option value="split">错误合并拆分</option></select></div><div><label>修正类别（可选）</label><input id="feedbackCategory" maxlength="100" placeholder="如：价格 / 功能 / 体验"></div><div><label>修正摘要（可选）</label><input id="feedbackSummary" maxlength="1000" placeholder="人工确认后的需求摘要"></div></div>
+<label>误判原因 / 判断依据</label><input id="feedbackReason" maxlength="2000" placeholder="说明为何有效、无效或需要修正"><label>证据备注</label><input id="feedbackEvidence" maxlength="4000" placeholder="补充原文证据或合并 / 拆分关系"><button id="submitFeedback" disabled>提交标注</button><div id="feedbackHistory" class="muted" style="margin-top:12px">选择对象后显示该对象的反馈历史。</div></section>
+</main>
 <script>
 const $=id=>document.getElementById(id);
 async function api(path,opts={}){const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});const d=await r.json();if(!r.ok)throw Error(d.detail||r.statusText);return d}
@@ -21,12 +25,35 @@ $('install').onclick=async()=>{$('install').disabled=true;try{await api('/api/v1
 $('start').onclick=async()=>{try{const mode=$('mode').value,p={platform:$('platform').value,mode,include_replies:$('replies').checked,max_posts:+$('posts').value,max_comments_per_post:+$('comments').value};p[{search:'keywords',detail:'target_ids',creator:'creator_ids'}[mode]]=$('target').value;const j=await api('/api/v1/crawler/jobs',{method:'POST',body:JSON.stringify(p)});$('taskMsg').textContent='任务已启动：'+j.id+'。首次登录请在弹出的浏览器中扫码。';await refresh()}catch(e){$('taskMsg').textContent=e.message}}
 $('refresh').onclick=()=>refresh().catch(e=>alert(e.message));
 $('import').onclick=async()=>{try{const d=await api('/api/v1/imports/exports',{method:'POST'});$('stats').textContent=JSON.stringify(d);await refresh()}catch(e){alert(e.message)}}
-$('comments').onclick=async()=>{$('results').textContent=JSON.stringify(await api('/api/v1/comments'),null,2)}
-$('demands').onclick=async()=>{$('results').textContent=JSON.stringify(await api('/api/v1/demands?since_hours=72'),null,2)}
+$('comments').onclick=async()=>{const d=await api('/api/v1/comments');$('results').innerHTML=d.items.map(c=>'<article style="padding:10px 0;border-bottom:1px solid #edf0f5"><b>'+esc(c.platform)+' · '+esc(c.comment_id)+'</b><p>'+esc(c.comment_text)+'</p>'+feedbackButton('comment',c.platform+'::'+c.comment_id,c.comment_text.slice(0,30))+'</article>').join('')||'暂无评论'}
+$('demands').onclick=async()=>{const d=await api('/api/v1/demands?since_hours=72');$('results').innerHTML=d.items.map(c=>'<article style="padding:10px 0;border-bottom:1px solid #edf0f5"><b>'+esc(c.label)+'</b><p>类别：'+esc(c.category)+' · 成员：'+esc(c.member_count||c.count||0)+' · 强度：'+esc(c.strength_score||'-')+'</p>'+feedbackButton('demand_cluster',c.cluster_id,c.label)+'</article>').join('')||'暂无需求簇'}
 $('installReverse').onclick=async()=>{try{const d=await api('/api/v1/collectors/reverse/install',{method:'POST'});$('reverseStatus').textContent='扩展引擎安装完成';await refresh()}catch(e){alert(e.message)}};
 $('saveHours').onclick=async()=>{try{const d=await api('/api/v1/settings/time-window',{method:'PUT',body:JSON.stringify({hours:+$('hours').value})});$('hours').value=d.recent_hours;alert('时间窗口已保存')}catch(e){alert(e.message)}};
 $('externalStart').onclick=async()=>{try{const d=await api('/api/v1/collectors/reverse/collect',{method:'POST',body:JSON.stringify({platform:$('externalPlatform').value,mode:$('externalMode').value,query:$('externalQuery').value,limit:50})});$('externalResult').textContent=JSON.stringify(d,null,2)}catch(e){$('externalResult').textContent=e.message}};
 $('analyze').onclick=async()=>{try{$('results').textContent='正在分析…';const d=await api('/api/v1/analysis/run',{method:'POST',body:JSON.stringify({limit:1000})});$('results').textContent=JSON.stringify(d,null,2)}catch(e){$('results').textContent=e.message}};
 $('trends').onclick=async()=>{$('results').textContent=JSON.stringify(await api('/api/v1/analytics/trends?since_hours=720&bucket=day'),null,2)};
+
+let selectedFeedbackTarget=null;
+function feedbackButton(type,id,title){return '<button class="secondary" onclick="openFeedback(\''+type+'\',\''+encodeURIComponent(id)+'\',\''+encodeURIComponent(title)+'\')">标注</button>'}
+async function openFeedback(type,encodedId,encodedTitle){
+ selectedFeedbackTarget={type,id:decodeURIComponent(encodedId)};
+ $('feedbackTarget').textContent=type+' · '+decodeURIComponent(encodedTitle)+' · '+selectedFeedbackTarget.id;
+ $('submitFeedback').disabled=false;
+ const d=await api('/api/v1/feedback?target_type='+encodeURIComponent(type)+'&target_id='+encodeURIComponent(selectedFeedbackTarget.id)+'&limit=50');
+ $('feedbackHistory').innerHTML=d.items.length?d.items.map(f=>'<div style="padding:8px 0;border-bottom:1px solid #edf0f5"><b>'+esc(f.label)+'</b> · '+esc(f.actor)+' · '+esc(f.created_at)+'<div>'+esc(f.reason||f.evidence_note||'无补充说明')+'</div>'+(f.supersedes_feedback_id?' <span class="muted">修订自 #'+f.supersedes_feedback_id+'</span>':'')+'</div>').join(''):'暂无历史标注';
+ document.getElementById('feedbackWorkspace').scrollIntoView({behavior:'smooth',block:'center'});
+}
+$('submitFeedback').onclick=async()=>{
+ if(!selectedFeedbackTarget)return;
+ const payload={target_type:selectedFeedbackTarget.type,target_id:selectedFeedbackTarget.id,label:$('feedbackLabel').value,
+ corrected_category:$('feedbackCategory').value||null,corrected_summary:$('feedbackSummary').value||null,
+ reason:$('feedbackReason').value||null,evidence_note:$('feedbackEvidence').value||null};
+ try{const created=await api('/api/v1/feedback',{method:'POST',body:JSON.stringify(payload)});
+ $('feedbackReason').value='';$('feedbackEvidence').value='';
+ await openFeedback(selectedFeedbackTarget.type,encodeURIComponent(selectedFeedbackTarget.id),encodeURIComponent('反馈已保存'));
+ $('feedbackHistory').insertAdjacentHTML('afterbegin','<div class="ok">已追加标注记录 #'+created.id+'</div>');
+ }catch(e){alert(e.message)}
+};
+
 refresh().catch(e=>$('engineStatus').textContent=e.message);
 </script></body></html>

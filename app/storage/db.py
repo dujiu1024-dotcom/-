@@ -103,6 +103,30 @@ def connect() -> sqlite3.Connection:
             provider TEXT NOT NULL, status TEXT NOT NULL, error TEXT
         )
     """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS demand_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_type TEXT NOT NULL CHECK(target_type IN ('comment','content','demand_cluster')),
+            target_id TEXT NOT NULL,
+            label TEXT NOT NULL CHECK(label IN (
+                'valid_demand','non_demand','category_correction','merge','split'
+            )),
+            corrected_category TEXT,
+            corrected_summary TEXT,
+            reason TEXT,
+            evidence_note TEXT,
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            supersedes_feedback_id INTEGER REFERENCES demand_feedback(id)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_demand_feedback_target_created
+        ON demand_feedback(target_type, target_id, created_at DESC, id DESC)
+    """)
+
     # Expression indexes match julianday() predicates and preserve legacy timestamp compatibility.
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_comments_platform_created_jd
@@ -259,3 +283,95 @@ def list_comments(since_hours: int | None = None, platform: str | None = None,
         include_unknown_time=include_unknown_time,
     )
     return list(iter_comments(filters, batch_size=500))
+
+
+FEEDBACK_LABELS = {
+    "valid_demand", "non_demand", "category_correction", "merge", "split"
+}
+FEEDBACK_TARGET_TYPES = {"comment", "content", "demand_cluster"}
+
+
+def create_feedback(
+    *,
+    target_type: str,
+    target_id: str,
+    label: str,
+    corrected_category: str | None = None,
+    corrected_summary: str | None = None,
+    reason: str | None = None,
+    evidence_note: str | None = None,
+    actor: str = "local_user",
+) -> dict:
+    """Append a human judgement; never mutates comments or AI analysis rows."""
+    if target_type not in FEEDBACK_TARGET_TYPES:
+        raise ValueError("unsupported target_type")
+    if label not in FEEDBACK_LABELS:
+        raise ValueError("unsupported feedback label")
+    target_id = target_id.strip()
+    actor = actor.strip()
+    if not target_id:
+        raise ValueError("target_id must not be empty")
+    if not actor:
+        raise ValueError("actor must not be empty")
+    now = datetime.now(UTC).isoformat()
+    with connect() as conn:
+        previous = conn.execute(
+            """SELECT id FROM demand_feedback
+               WHERE target_type=? AND target_id=?
+               ORDER BY created_at DESC, id DESC LIMIT 1""",
+            (target_type, target_id),
+        ).fetchone()
+        cur = conn.execute(
+            """INSERT INTO demand_feedback(
+                target_type,target_id,label,corrected_category,corrected_summary,
+                reason,evidence_note,actor,created_at,updated_at,supersedes_feedback_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (target_type,target_id,label,corrected_category,corrected_summary,
+             reason,evidence_note,actor,now,now,previous["id"] if previous else None),
+        )
+        row = conn.execute(
+            "SELECT * FROM demand_feedback WHERE id=?", (cur.lastrowid,)
+        ).fetchone()
+        return dict(row)
+
+
+def list_feedback(
+    *,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    label: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """List append-only feedback history with SQL filtering and pagination."""
+    if limit < 1 or limit > 500:
+        raise ValueError("limit must be between 1 and 500")
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    clauses: list[str] = []
+    params: list[object] = []
+    if target_type:
+        if target_type not in FEEDBACK_TARGET_TYPES:
+            raise ValueError("unsupported target_type")
+        clauses.append("target_type=?")
+        params.append(target_type)
+    if target_id:
+        clauses.append("target_id=?")
+        params.append(target_id)
+    if label:
+        if label not in FEEDBACK_LABELS:
+            raise ValueError("unsupported feedback label")
+        clauses.append("label=?")
+        params.append(label)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    with connect() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) AS total FROM demand_feedback" + where, params
+        ).fetchone()["total"]
+        rows = conn.execute(
+            "SELECT * FROM demand_feedback" + where
+            + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+    return {"items": [dict(row) for row in rows], "total": int(total),
+            "limit": limit, "offset": offset}

@@ -13,7 +13,7 @@ from app.services.crawler_engine import (
 )
 from app.services.demand import demand_candidates
 from app.services.settings import get_settings, update_recent_hours
-from app.storage.db import get_recent_hours, list_comments, upsert_comment
+from app.storage.db import (create_feedback, get_recent_hours, list_comments, list_feedback, upsert_comment)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -26,6 +26,17 @@ class AnalysisRequest(BaseModel):
     since_hours: int | None = Field(default=None, ge=1, le=8760)
     limit: int = Field(default=500, ge=1, le=3000)
 
+
+
+class FeedbackRequest(BaseModel):
+    target_type: str = Field(pattern="^(comment|content|demand_cluster)$")
+    target_id: str = Field(min_length=1, max_length=300)
+    label: str = Field(pattern="^(valid_demand|non_demand|category_correction|merge|split)$")
+    corrected_category: str | None = Field(default=None, max_length=100)
+    corrected_summary: str | None = Field(default=None, max_length=1000)
+    reason: str | None = Field(default=None, max_length=2000)
+    evidence_note: str | None = Field(default=None, max_length=4000)
+    actor: str = Field(default="local_user", min_length=1, max_length=100)
 
 class ExternalCollectRequest(BaseModel):
     platform: str
@@ -170,6 +181,65 @@ def comments(since_hours: int | None = Query(None, ge=1, le=8760),
     rows = list_comments(since_hours=hours, platform=platform,
                          include_unknown_time=include_unknown_time)
     return {"count": len(rows), "since_hours": hours, "items": rows}
+
+
+
+@router.post("/feedback", status_code=201)
+def post_feedback(payload: FeedbackRequest):
+    target_id = payload.target_id.strip()
+    if not target_id:
+        raise HTTPException(422, "target_id 不能为空")
+    try:
+        if payload.target_type == "comment":
+            if "::" not in target_id:
+                raise HTTPException(422, "评论 target_id 必须使用 platform::comment_id")
+            platform, comment_id = target_id.split("::", 1)
+            with __import__("app.storage.db", fromlist=["connect"]).connect() as conn:
+                exists = conn.execute(
+                    "SELECT 1 FROM comments WHERE platform=? AND comment_id=?",
+                    (platform, comment_id),
+                ).fetchone()
+            if not exists:
+                raise HTTPException(404, "评论不存在")
+        elif payload.target_type == "content":
+            with __import__("app.storage.db", fromlist=["connect"]).connect() as conn:
+                exists = conn.execute(
+                    "SELECT 1 FROM comments WHERE content_id=? LIMIT 1", (target_id,)
+                ).fetchone()
+            if not exists:
+                raise HTTPException(404, "内容不存在")
+        else:
+            with __import__("app.storage.db", fromlist=["connect"]).connect() as conn:
+                exists = conn.execute(
+                    "SELECT 1 FROM demand_clusters WHERE cluster_id=?", (target_id,)
+                ).fetchone()
+            if not exists:
+                raise HTTPException(404, "需求簇不存在")
+        return create_feedback(
+            target_type=payload.target_type, target_id=target_id, label=payload.label,
+            corrected_category=payload.corrected_category,
+            corrected_summary=payload.corrected_summary, reason=payload.reason,
+            evidence_note=payload.evidence_note, actor=payload.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/feedback")
+def get_feedback(
+    target_type: str | None = Query(None, pattern="^(comment|content|demand_cluster)$"),
+    target_id: str | None = Query(None, min_length=1, max_length=300),
+    label: str | None = Query(None, pattern="^(valid_demand|non_demand|category_correction|merge|split)$"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    try:
+        return list_feedback(
+            target_type=target_type, target_id=target_id, label=label,
+            limit=limit, offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.post("/analysis/run")
