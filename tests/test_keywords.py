@@ -118,21 +118,20 @@ def test_verification_batch_records_metrics_and_threshold_decision(tmp_path, mon
 
     monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "verify.sqlite3")
     discovery._ensure()
+    from app.services.collection_library import create_project
+    project_id = create_project("验证项目")["id"]
     now = datetime.now(UTC).isoformat()
     with db.connect() as conn:
         conn.execute("""INSERT INTO keyword_candidates
             (project_id,keyword,normalized_keyword,category,source_type,source_text,
              generation_reason,status,created_at,updated_at)
-            VALUES('project-x','批量处理工具','批量处理工具','工具需求','comment','有没有批量处理工具',
-                   '来自评论','pending',?,?)""", (now, now))
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (project_id, "批量处理工具", "批量处理工具", "工具需求", "comment",
+             "有没有批量处理工具", "来自评论", "pending", now, now))
         candidate_id = conn.execute("SELECT id FROM keyword_candidates").fetchone()[0]
 
-    monkeypatch.setattr(discovery, "create_strategy", lambda project_id, payload: {
-        "id": "strategy-x", "project_id": project_id, **payload
-    })
-    monkeypatch.setattr(discovery, "create_discovery_run", lambda strategy_id: {"id": "run-x"})
     monkeypatch.setattr(discovery, "execute_discovery_batch", lambda *args, **kwargs: {"status": "queued"})
-    batch = keywords.start_verification_batch("project-x", "bilibili", [candidate_id])
+    batch = keywords.start_verification_batch(project_id, "bilibili", [candidate_id])
     assert batch["status"] == "queued"
 
     with db.connect() as conn:
