@@ -9,7 +9,8 @@ from app.models import CommentRecord
 def connect() -> sqlite3.Connection:
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row\n    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS comments (
             platform TEXT NOT NULL, comment_id TEXT NOT NULL, content_id TEXT,
