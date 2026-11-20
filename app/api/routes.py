@@ -1,10 +1,11 @@
 from fastapi import APIRouter, HTTPException, Query
+
+from app.collectors.mediacrawler_import import normalize_row, read_export
 from app.collectors.registry import list_platforms
-from app.collectors.mediacrawler_import import read_export, normalize_row
-from app.config import IMPORT_ROOT, DEFAULT_RECENT_HOURS
+from app.config import DEFAULT_RECENT_HOURS, IMPORT_ROOT
 from app.models import ImportRequest
-from app.storage.db import upsert_comment, list_comments
 from app.services.demand import demand_candidates
+from app.storage.db import list_comments, upsert_comment
 
 router = APIRouter(prefix="/api/v1")
 
