@@ -347,6 +347,7 @@ class KeywordVerificationRequest(BaseModel):
     platform: str = Field(min_length=1, max_length=40)
     candidate_ids: list[int] = Field(min_length=1, max_length=100)
     requested_limit: int = Field(default=20, ge=10, le=30)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class KeywordThresholdRequest(BaseModel):
@@ -360,7 +361,8 @@ class KeywordThresholdRequest(BaseModel):
 def keyword_verification_create(payload: KeywordVerificationRequest):
     try:
         return start_verification_batch(payload.project_id, payload.platform,
-                                        payload.candidate_ids, payload.requested_limit)
+                                        payload.candidate_ids, payload.requested_limit,
+                                        payload.idempotency_key)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 

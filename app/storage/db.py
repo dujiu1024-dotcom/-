@@ -100,6 +100,11 @@ def connect() -> sqlite3.Connection:
             platform TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','succeeded','failed','cancelled')),
             requested_limit INTEGER NOT NULL DEFAULT 20, started_at TEXT, finished_at TEXT, error TEXT, created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS keyword_verification_idempotency (
+            idempotency_key TEXT PRIMARY KEY, request_hash TEXT NOT NULL,
+            batch_id INTEGER, created_at TEXT NOT NULL,
+            FOREIGN KEY(batch_id) REFERENCES keyword_verification_batches(id)
+        );
         CREATE TABLE IF NOT EXISTS keyword_verification_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL, candidate_id INTEGER NOT NULL,
             hit_count INTEGER NOT NULL DEFAULT 0, valid_demand_count INTEGER NOT NULL DEFAULT 0,
