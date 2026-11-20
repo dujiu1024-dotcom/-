@@ -72,7 +72,6 @@ def test_discovery_executes_platform_search_and_imports_posts(tmp_path, monkeypa
     from app.services import discovery
 
     monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-exec.sqlite3")
-    export_root = tmp_path / "exports"
     monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
     job = {"id": "job-123", "status": "running", "platform": "bilibili"}
     monkeypatch.setattr(discovery, "start_job", lambda payload: job)
