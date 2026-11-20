@@ -42,10 +42,7 @@ def _running_interrupted_batch(tmp_path, monkeypatch):
         conn.execute(
             "UPDATE discovery_runs SET status='paused' WHERE id=?", (run["id"],)
         )
-        task = dict(conn.execute(
-            "SELECT * FROM discovery_run_tasks WHERE run_id=?", (run["id"],)
-        ).fetchone())
-    return client, run["id"], task
+    return client, run["id"]
 
 
 def test_worker_lease_expiring_after_spawn_preserves_process_identity(tmp_path, monkeypatch):
@@ -108,7 +105,7 @@ def test_service_restart_pauses_unknown_job_and_missing_pid_can_resume(tmp_path,
     from app.storage import db
     from app.services import discovery
 
-    client, run_id, task = _running_interrupted_batch(tmp_path, monkeypatch)
+    client, run_id = _running_interrupted_batch(tmp_path, monkeypatch)
     starts = []
     monkeypatch.setattr(discovery, "get_job", lambda job_id: None)
     monkeypatch.setattr(discovery, "start_job", lambda payload: starts.append(payload))
@@ -138,7 +135,7 @@ def test_service_restart_pauses_unknown_job_and_missing_pid_can_resume(tmp_path,
 def test_resume_rejects_original_pid_but_allows_pid_reuse(tmp_path, monkeypatch):
     from app.services import discovery
 
-    _, run_id, _ = _running_interrupted_batch(tmp_path, monkeypatch)
+    _, run_id = _running_interrupted_batch(tmp_path, monkeypatch)
     monkeypatch.setattr(discovery, "get_process_identity", lambda pid: "original-process")
     with pytest.raises(ValueError, match="仍在运行"):
         discovery.resume_discovery_batch(run_id)
@@ -152,7 +149,7 @@ def test_resume_fails_closed_when_live_pid_has_no_saved_identity(tmp_path, monke
     from app.storage import db
     from app.services import discovery
 
-    _, run_id, _ = _running_interrupted_batch(tmp_path, monkeypatch)
+    _, run_id = _running_interrupted_batch(tmp_path, monkeypatch)
     with db.connect() as conn:
         conn.execute(
             "UPDATE discovery_run_tasks SET process_identity='' WHERE run_id=?", (run_id,)
@@ -185,3 +182,13 @@ def test_child_process_abnormal_exit_is_recorded_with_exit_code(tmp_path):
     assert job["error_code"]
     assert job["error_occurred_at"]
     assert job["retryable"] is False
+
+
+
+def test_resume_fails_closed_when_process_probe_is_unavailable(tmp_path, monkeypatch):
+    from app.services import discovery
+
+    _, run_id = _running_interrupted_batch(tmp_path, monkeypatch)
+    monkeypatch.setattr(discovery, "get_process_identity", lambda pid: "unavailable")
+    with pytest.raises(ValueError, match="无法读取 PID 启动身份"):
+        discovery.resume_discovery_batch(run_id)

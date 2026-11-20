@@ -45,7 +45,7 @@ def get_process_identity(pid: int | str | None) -> str | None:
             capture_output=True, text=True, timeout=3, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        return "unavailable"
     identity = " ".join((result.stdout or "").split())
     if result.returncode != 0 or not identity:
         return None

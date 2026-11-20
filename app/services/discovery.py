@@ -861,6 +861,8 @@ def resume_discovery_batch(run_id):
         if task and task["status"] == "interrupted" and task["pid"]:
             current_identity = get_process_identity(task["pid"])
             expected_identity = task["process_identity"] or ""
+            if current_identity == "unavailable":
+                raise ValueError("无法安全恢复：系统无法读取 PID 启动身份；请检查 ps 权限和进程状态后重试")
             if current_identity is not None and not expected_identity:
                 raise ValueError("无法安全恢复：历史任务缺少 PID 启动身份，当前 PID 仍存在；请先人工确认并停止旧进程")
             if current_identity is not None and current_identity == expected_identity:
