@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.services.discovery import (
-    execute_discovery_run, refresh_discovery_run,
+    execute_discovery_batch, execute_discovery_run, refresh_discovery_run,
     approve_discovered_source, create_discovery_run, create_strategy,
     ingest_discovered, list_discovered, list_strategies,
 )
@@ -17,6 +17,10 @@ class StrategyRequest(BaseModel):
     platforms: list[str] = Field(default_factory=list, max_length=30)
     language: str = Field(default="zh", max_length=12)
     enabled: bool = True
+
+
+class BatchExecuteRequest(BaseModel):
+    platforms: list[str] = Field(default_factory=list, max_length=7)
 
 
 class DiscoveredItem(BaseModel):
@@ -63,6 +67,19 @@ def discovery_run_create(strategy_id: str):
 def discovery_run_execute(run_id: str, platform: str, query_index: int = Query(0, ge=0, le=49)):
     try:
         result = execute_discovery_run(run_id, platform, query_index)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not result:
+        raise HTTPException(404, "发现批次不存在")
+    return result
+
+
+@router.post("/runs/{run_id}/execute-batch")
+def discovery_run_execute_batch(run_id: str, payload: BatchExecuteRequest):
+    try:
+        result = execute_discovery_batch(run_id, payload.platforms or None)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     except RuntimeError as exc:
