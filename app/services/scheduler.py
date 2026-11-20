@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -13,6 +14,7 @@ from app.storage.db import connect
 
 
 logger = logging.getLogger(__name__)
+_tick_lock = threading.Lock()
 
 
 def _now() -> datetime:
@@ -23,7 +25,7 @@ def _iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat()
 
 
-def tick_schedules(limit: int = 1) -> dict[str, Any]:
+def _tick_schedules(limit: int = 1) -> dict[str, Any]:
     """Run due, explicitly verified creator schedules; never infer platform support."""
     now = _now()
     jobs = {job["id"]: job for job in list_jobs()}
@@ -116,6 +118,16 @@ def tick_schedules(limit: int = 1) -> dict[str, Any]:
             # Existing crawler engine is single-job; one start per scheduler tick.
             break
     return {"started": started, "reconciled": reconciled, "deferred": None}
+
+
+def tick_schedules(limit: int = 1) -> dict[str, Any]:
+    if not _tick_lock.acquire(blocking=False):
+        return {"started": [], "reconciled": 0, "deferred": "scheduler_busy"}
+    try:
+        return _tick_schedules(limit)
+    finally:
+        _tick_lock.release()
+
 
 
 def schedule_loop(stop_event, interval_seconds: int = 30) -> None:
