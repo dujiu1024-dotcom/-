@@ -14,7 +14,9 @@ from app.services.crawler_engine import (
 )
 from app.services.demand import demand_candidates
 from app.services.settings import get_settings, update_recent_hours
-from app.services.quality import (\n    quality_collection, quality_demands, quality_overview, quality_sources,\n)
+from app.services.quality import (
+    quality_collection, quality_demands, quality_overview, quality_sources,
+)
 from app.storage.db import (create_feedback, get_recent_hours, list_comments, list_feedback, upsert_comment)
 
 router = APIRouter(prefix="/api/v1")
