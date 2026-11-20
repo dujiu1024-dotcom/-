@@ -182,4 +182,7 @@ def test_rejected_keyword_updates_expansion_blacklist(tmp_path, monkeypatch):
     rejected = client.post(f"/api/v1/keywords/candidates/{candidate['id']}/review",
                            json={"action": "reject", "note": "噪声词"})
     assert rejected.status_code == 200
-    assert candidate["normalized_keyword"] in keywords._blacklist()
+    from app.storage.db import get_setting
+    import json
+    saved = json.loads(get_setting("keyword_blacklist", "[]"))
+    assert candidate["normalized_keyword"] in saved
