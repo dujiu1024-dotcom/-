@@ -171,6 +171,7 @@ def test_child_process_abnormal_exit_is_recorded_with_exit_code(tmp_path):
 
     crawler_engine._jobs["fault-child"] = {
         "id": "fault-child", "status": "running", "pid": 77881,
+        "started_at": "2026-11-20T00:00:00+00:00",
         "log_file": str(log_path), "finished_at": None,
     }
     crawler_engine._processes["fault-child"] = CrashedProcess()
