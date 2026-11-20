@@ -268,6 +268,7 @@ def _import_discovery_exports(platform, query_term, started_epoch):
 
 
 def execute_discovery_run(run_id, platform, query_index=0):
+    _ensure()
     if platform not in SUPPORTED:
         raise ValueError(f"{platform} 暂未接入原生搜索执行；首批支持：{', '.join(SUPPORTED)}")
     with connect() as conn:
@@ -277,27 +278,35 @@ def execute_discovery_run(run_id, platform, query_index=0):
         if not row:
             return None
         run = dict(row)
-        if run["status"] == "running":
-            raise ValueError("该发现批次已有平台任务运行中，请先刷新任务状态")
+        if run["status"] != "prepared":
+            raise ValueError(f"该发现批次当前状态为 {run['status']}，不能重复提交")
         terms = json.loads(run["terms_json"])
         allowed_platforms = json.loads(run["platforms_json"])
         if allowed_platforms and platform not in allowed_platforms:
             raise ValueError(f"该搜索策略未启用平台：{platform}")
         if query_index < 0 or query_index >= len(terms):
             raise ValueError("搜索词序号超出范围")
-        term = terms[query_index]
-        started_at = datetime.now(UTC)
-        job = start_job({"platform": platform, "mode": "search", "keywords": term,
-                         "max_posts": 30, "max_comments_per_post": 100,
-                         "include_replies": False})
-        execution = {"platform": platform, "query_term": term, "query_index": query_index,
-                     "job_id": job["id"], "started_at": started_at.isoformat(),
-                     "started_epoch": started_at.timestamp()}
-        conn.execute("""UPDATE discovery_runs SET status='running', execution_json=?,
-            notes=? WHERE id=?""",
+        task = {"platform": platform, "query_term": terms[query_index],
+                "query_index": query_index}
+        execution = {"batch": True, "tasks": [task], "cursor": 0,
+                     "completed": 0, "failed": 0, "created_at": _now()}
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE discovery_runs SET status='queued', execution_json=?, notes=? WHERE id=? AND status='prepared'",
             (json.dumps(execution, ensure_ascii=False),
-             f"正在执行 {platform} 搜索：{term}", run_id))
-    return {"run_id": run_id, "status": "running", **execution}
+             f"单平台任务已加入后台队列：{platform} · {task['query_term']}", run_id),
+        )
+        if cur.rowcount != 1:
+            raise ValueError("该发现批次已被其他请求提交，请刷新批次状态")
+        conn.execute("DELETE FROM discovery_run_tasks WHERE run_id=?", (run_id,))
+        conn.execute("""INSERT INTO discovery_run_tasks
+            (id,run_id,task_index,platform,query_term,query_index,status)
+            VALUES(?,?,?,?,?,?,?)""",
+            (uuid.uuid4().hex[:12], run_id, 0, platform,
+             task["query_term"], query_index, "queued"))
+    return {"run_id": run_id, "status": "queued", "task_count": 1,
+            "current_task": task,
+            "notes": "任务已持久化，由持有全局租约的后台 worker 串行领取。"}
 
 
 def _start_batch_task(run_id, execution):
