@@ -159,6 +159,15 @@ def review_candidate(candidate_id: str, action: str, group_name: str = "",
             """, (source_id, candidate["platform"], candidate["source_type"], candidate["source_key"],
                   candidate["display_name"], candidate["profile_url"], group_name, priority,
                   interval_minutes, window_hours, tracking_scope, candidate_id, now, now))
+            next_run = datetime.fromtimestamp(
+                datetime.now(UTC).timestamp() + interval_minutes * 60, UTC
+            ).isoformat()
+            conn.execute("""
+                INSERT INTO source_schedules(source_id,enabled,next_run_at,updated_at)
+                VALUES(?,1,?,?)
+                ON CONFLICT(source_id) DO UPDATE SET enabled=1,next_run_at=excluded.next_run_at,
+                    updated_at=excluded.updated_at
+            """, (source_id, next_run, now))
         conn.execute("UPDATE source_candidates SET status=?,updated_at=? WHERE id=?", (status, now, candidate_id))
         conn.execute("INSERT INTO source_audit(source_id,candidate_id,action,detail_json,created_at) VALUES(?,?,?,?,?)",
                      (source_id, candidate_id, action, json.dumps({"group_name": group_name,
