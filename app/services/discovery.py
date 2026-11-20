@@ -320,7 +320,7 @@ def _start_batch_task(run_id, execution, lease_owner=None):
     execution["starting_owner"] = lease_owner or "manual-test"
     with connect() as conn:
         cur = conn.execute(
-            "UPDATE discovery_runs SET status='starting', execution_json=?, notes=? WHERE id=? AND status='queued'",
+            "UPDATE discovery_runs SET status='starting', execution_json=?, notes=? WHERE id=? AND status IN ('queued','running')",
             (json.dumps(execution, ensure_ascii=False),
              f"正在领取任务 {index + 1}/{len(execution['tasks'])}：{task['platform']} · {task['query_term']}",
              run_id),
