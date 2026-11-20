@@ -12,7 +12,7 @@ from app.services.crawler_engine import (
     engine_status, get_job, import_latest_exports, install_engine, read_job_log,
     session_status, start_job, stop_job, list_jobs,
 )
-from app.services.demand import demand_candidates
+from app.services.demand import demand_candidates\nfrom app.services.keywords import generate_candidates, list_candidates, get_candidate, review_candidate, include_candidate
 from app.services.settings import get_settings, update_recent_hours
 from app.storage.db import get_recent_hours, list_comments, upsert_comment
 
@@ -287,3 +287,55 @@ def demands(limit: int = Query(100, ge=1, le=1000)):
 def analytics_trends(since_hours: int = Query(720, ge=1, le=8760),
                      bucket: str = Query("day", pattern="^(hour|day)$")):
     return get_trends(since_hours, bucket)
+
+
+class KeywordReviewRequest(BaseModel):
+    action: str = Field(pattern="^(approve|reject|merge|defer|disable|reactivate)$")
+    note: str = Field(default="", max_length=1000)
+    reviewer: str = Field(default="local-user", max_length=100)
+    target_candidate_id: int | None = Field(default=None, ge=1)
+
+
+class KeywordIncludeRequest(BaseModel):
+    strategy_id: str = Field(min_length=1, max_length=100)
+    reviewer: str = Field(default="local-user", max_length=100)
+
+
+@router.post("/keywords/expand")
+def keyword_expand(project_id: str = "default", limit: int = Query(300, ge=1, le=1000)):
+    return generate_candidates(project_id, limit)
+
+
+@router.get("/keywords/candidates")
+def keyword_candidates(project_id: str = "default", status: str | None = None,
+                       limit: int = Query(100, ge=1, le=200),
+                       offset: int = Query(0, ge=0)):
+    return list_candidates(project_id, status, limit, offset)
+
+
+@router.get("/keywords/candidates/{candidate_id}")
+def keyword_candidate_detail(candidate_id: int):
+    item = get_candidate(candidate_id)
+    if not item:
+        raise HTTPException(404, "候选词不存在")
+    return item
+
+
+@router.post("/keywords/candidates/{candidate_id}/review")
+def keyword_candidate_review(candidate_id: int, payload: KeywordReviewRequest):
+    try:
+        item = review_candidate(candidate_id, payload.action, payload.note,
+                                payload.reviewer, payload.target_candidate_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not item:
+        raise HTTPException(404, "候选词不存在")
+    return item
+
+
+@router.post("/keywords/candidates/{candidate_id}/include")
+def keyword_candidate_include(candidate_id: int, payload: KeywordIncludeRequest):
+    try:
+        return include_candidate(candidate_id, payload.strategy_id, payload.reviewer)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
