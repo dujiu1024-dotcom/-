@@ -223,7 +223,7 @@ def start_verification_batch(project_id: str, platform: str, candidate_ids: list
         conn.executemany("INSERT INTO keyword_verification_batch_candidates(batch_id,candidate_id) VALUES(?,?)",
                          [(batch_id, row["id"]) for row in rows])
     try:
-        execute_discovery_batch(run["id"], [platform], max_tasks=100)
+        execute_discovery_batch(run["id"], [platform], max_tasks=100, max_posts=requested_limit)
     except (ValueError, RuntimeError) as exc:
         with connect() as conn:
             conn.execute("UPDATE keyword_verification_batches SET status='failed',finished_at=?,error=? WHERE id=?",
