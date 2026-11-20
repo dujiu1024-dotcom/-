@@ -119,6 +119,26 @@ def connect() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_keyword_candidates_project ON keyword_candidates(project_id,status);
         CREATE INDEX IF NOT EXISTS idx_keyword_verification_batch ON keyword_verification_results(batch_id);
     """)
+    review_columns = {row[1] for row in conn.execute("PRAGMA table_info(keyword_reviews)")}
+    review_migrations = {
+        "original_keyword": "TEXT NOT NULL DEFAULT ''",
+        "normalized_keyword": "TEXT NOT NULL DEFAULT ''",
+        "target_strategy_id": "TEXT",
+    }
+    for column, definition in review_migrations.items():
+        if column not in review_columns:
+            conn.execute(f"ALTER TABLE keyword_reviews ADD COLUMN {column} {definition}")
+    # Preserve a point-in-time snapshot for historical audit rows.
+    conn.execute("""UPDATE keyword_reviews
+        SET original_keyword=COALESCE(NULLIF(original_keyword,''),(
+                SELECT keyword FROM keyword_candidates WHERE id=keyword_reviews.candidate_id)),
+            normalized_keyword=COALESCE(NULLIF(normalized_keyword,''),(
+                SELECT normalized_keyword FROM keyword_candidates WHERE id=keyword_reviews.candidate_id))
+        WHERE original_keyword='' OR normalized_keyword=''""")
+    conn.execute("""UPDATE keyword_reviews
+        SET target_strategy_id=substr(note,6)
+        WHERE action='include' AND target_strategy_id IS NULL
+          AND note LIKE '纳入策略 %'""")
     candidate_columns = {row[1] for row in conn.execute("PRAGMA table_info(keyword_candidates)")}
     candidate_migrations = {
         "confidence": "REAL NOT NULL DEFAULT 0.5",

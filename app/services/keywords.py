@@ -212,8 +212,11 @@ def review_candidate(candidate_id: int, action: str, note: str = "",
         conn.execute("UPDATE keyword_candidates SET status=?,merged_into_id=?,updated_at=? WHERE id=?",
                      (status, target_candidate_id if action == "merge" else None, now, candidate_id))
         conn.execute("""INSERT INTO keyword_reviews
-            (candidate_id,action,reviewer,note,target_candidate_id,created_at) VALUES(?,?,?,?,?,?)""",
-            (candidate_id, action, reviewer[:100], note[:1000], target_candidate_id, now))
+            (candidate_id,action,reviewer,note,target_candidate_id,
+             original_keyword,normalized_keyword,target_strategy_id,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (candidate_id, action, reviewer[:100], note[:1000], target_candidate_id,
+             row["keyword"], row["normalized_keyword"], None, now))
         if action == "reject":
             try:
                 saved = conn.execute("SELECT value FROM app_settings WHERE key='keyword_blacklist'").fetchone()
@@ -248,8 +251,11 @@ def include_candidate(candidate_id: int, strategy_id: str, reviewer: str = "loca
         conn.execute("UPDATE keyword_candidates SET status='included',updated_at=? WHERE id=?",
                      (now, candidate_id))
         conn.execute("""INSERT INTO keyword_reviews
-            (candidate_id,action,reviewer,note,created_at) VALUES(?,?,?,?,?)""",
-            (candidate_id, "include", reviewer[:100], f"纳入策略 {strategy_id}", now))
+            (candidate_id,action,reviewer,note,original_keyword,normalized_keyword,
+             target_strategy_id,created_at)
+            VALUES(?,?,?,?,?,?,?,?)""",
+            (candidate_id, "include", reviewer[:100], f"纳入策略 {strategy_id}",
+             candidate["keyword"], candidate["normalized_keyword"], strategy_id, now))
     return {"candidate_id": candidate_id, "strategy_id": strategy_id, "keyword": candidate["keyword"],
             "included": True, "terms": terms}
 

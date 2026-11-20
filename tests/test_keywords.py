@@ -78,6 +78,16 @@ def test_keyword_review_and_inclusion_require_approval(tmp_path, monkeypatch):
     detail = client.get(f"/api/v1/keywords/candidates/{cid}").json()
     assert [x["action"] for x in detail["reviews"]] == ["include", "approve"]
 
+    include_event, approve_event = detail["reviews"]
+    for event in (include_event, approve_event):
+        assert event["reviewer"] == "local-user"
+        assert event["original_keyword"] == candidate["keyword"]
+        assert event["normalized_keyword"] == candidate["normalized_keyword"]
+        assert event["created_at"]
+    assert include_event["target_strategy_id"] == strategy["id"]
+    assert approve_event["target_strategy_id"] is None
+    assert include_event["note"] == f"纳入策略 {strategy['id']}"
+
 
 def test_keyword_merge_rejects_cross_project_target(tmp_path, monkeypatch):
     from app.services import keywords
