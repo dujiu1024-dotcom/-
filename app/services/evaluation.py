@@ -147,7 +147,8 @@ def evaluate_analysis(
             "source": "latest human feedback on comment targets",
             "eligible_labels": list(EVALUABLE_LABELS),
             "feedback_is_append_only": True,
-            "sample_count": len(rows),
+            "sample_count": len({row["feedback_id"] for row in rows}),
+            "prediction_observations": len(rows),
             "limit": limit,
         },
         "filters": {
