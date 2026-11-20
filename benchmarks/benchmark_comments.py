@@ -94,37 +94,49 @@ def _peak_bytes(operation: Callable[[], object]) -> int:
 
 
 def benchmark_dataset(size: int, database_path: Path, repetitions: int = DEFAULT_REPETITIONS) -> dict:
-    populate_comments(size, database_path)
-    db.DATABASE_PATH = database_path
-    filters = db.CommentFilters(since_hours=72, platform="xhs")
-    page_query = lambda: db.page_comments(limit=50, offset=0)
-    count_query = db.count_comments
-    filtered_page_query = lambda: db.page_comments(filters, limit=50, offset=0)
-    filtered_count_query = lambda: db.count_comments(filters)
-    page_ms = _median_ms(page_query, repetitions)
-    count_ms = _median_ms(count_query, repetitions)
-    filtered_page_ms = _median_ms(filtered_page_query, repetitions)
-    filtered_count_ms = _median_ms(filtered_count_query, repetitions)
-    page_peak = _peak_bytes(page_query)
-    stream_limit = min(size, 5_000)
-    stream_peak = _peak_bytes(
-        lambda: sum(1 for _ in db.iter_comments(batch_size=250, limit=stream_limit))
-    )
-    with db.connect() as conn:
-        actual_count = int(conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0])
-    return {
-        "dataset_size": size,
-        "verified_rows": actual_count,
-        "first_page_ms": page_ms,
-        "count_ms": count_ms,
-        "filtered_page_ms": filtered_page_ms,
-        "filtered_count_ms": filtered_count_ms,
-        "first_page_peak_bytes": page_peak,
-        "stream_5000_rows": stream_limit,
-        "stream_5000_peak_bytes": stream_peak,
-        "database_size_bytes": database_path.stat().st_size,
-    }
+    original_database_path = db.DATABASE_PATH
+    try:
+        populate_comments(size, database_path)
+        db.DATABASE_PATH = database_path
+        filters = db.CommentFilters(since_hours=72, platform="xhs")
 
+        def page_query():
+            return db.page_comments(limit=50, offset=0)
+
+        def count_query():
+            return db.count_comments()
+
+        def filtered_page_query():
+            return db.page_comments(filters, limit=50, offset=0)
+
+        def filtered_count_query():
+            return db.count_comments(filters)
+
+        page_ms = _median_ms(page_query, repetitions)
+        count_ms = _median_ms(count_query, repetitions)
+        filtered_page_ms = _median_ms(filtered_page_query, repetitions)
+        filtered_count_ms = _median_ms(filtered_count_query, repetitions)
+        page_peak = _peak_bytes(page_query)
+        stream_limit = min(size, 5_000)
+        stream_peak = _peak_bytes(
+            lambda: sum(1 for _ in db.iter_comments(batch_size=250, limit=stream_limit))
+        )
+        with db.connect() as conn:
+            actual_count = int(conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0])
+        return {
+            "dataset_size": size,
+            "verified_rows": actual_count,
+            "first_page_ms": page_ms,
+            "count_ms": count_ms,
+            "filtered_page_ms": filtered_page_ms,
+            "filtered_count_ms": filtered_count_ms,
+            "first_page_peak_bytes": page_peak,
+            "stream_5000_rows": stream_limit,
+            "stream_5000_peak_bytes": stream_peak,
+            "database_size_bytes": database_path.stat().st_size,
+        }
+    finally:
+        db.DATABASE_PATH = original_database_path
 
 def evaluate_regression(results: list[dict]) -> dict:
     if not results:
