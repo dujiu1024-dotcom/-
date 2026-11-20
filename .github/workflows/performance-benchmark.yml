@@ -20,4 +20,4 @@ jobs:
         with:
           name: comment-performance-benchmark
           path: benchmark-results.json
-          if-no-files-found: error
+          if-no-files-found: ignore
