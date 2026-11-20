@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from app.collectors.mediacrawler_import import normalize_row, read_export
 from app.collectors.registry import list_platforms
 from app.collectors.reverse_cli import collect as collect_external, install_reverse_cli, reverse_status
-from app.config import DEFAULT_RECENT_HOURS, IMPORT_ROOT
+from app.config import IMPORT_ROOT
 from app.models import ImportRequest
 from app.services.analysis import get_clusters, get_trends, run_analysis
 from app.services.crawler_engine import (
@@ -12,7 +12,6 @@ from app.services.crawler_engine import (
     session_status, start_job, stop_job, list_jobs,
 )
 from app.services.demand import demand_candidates
-from app.services.llm import provider_status
 from app.services.settings import get_settings, update_recent_hours
 from app.storage.db import get_recent_hours, list_comments, upsert_comment
 
