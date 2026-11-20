@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from app.services.demand import classify
 from app.services.llm import LLMUnavailable, expand_keyword_batch, provider_status
-from app.storage.db import connect, get_setting, list_comments
+from app.storage.db import connect, get_setting, list_comments, set_setting
 
 PUNCT = re.compile(r"[，。！？、；：,.!?;:（）()【】{}\"'“”‘’]+")
 SPACE = re.compile(r"\s+")
@@ -147,6 +147,13 @@ def review_candidate(candidate_id: int, action: str, note: str = "",
         conn.execute("""INSERT INTO keyword_reviews
             (candidate_id,action,reviewer,note,target_candidate_id,created_at) VALUES(?,?,?,?,?,?)""",
             (candidate_id, action, reviewer[:100], note[:1000], target_candidate_id, now))
+        if action == "reject":
+            try:
+                blacklist = json.loads(get_setting("keyword_blacklist", "[]") or "[]")
+            except (TypeError, ValueError):
+                blacklist = []
+            blacklist = sorted(set(blacklist) | {row["normalized_keyword"]})
+            set_setting("keyword_blacklist", json.dumps(blacklist, ensure_ascii=False))
         result = conn.execute("SELECT * FROM keyword_candidates WHERE id=?", (candidate_id,)).fetchone()
     return dict(result)
 
