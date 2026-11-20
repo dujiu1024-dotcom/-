@@ -192,3 +192,185 @@ def quality_overview(since_hours: int = 168) -> dict:
             "source_health": "按统计窗口内任务状态、连续失败和连续零结果判定",
         },
     }
+
+
+def _period_cutoff(since_hours: int) -> tuple[datetime, str]:
+    if since_hours < 1 or since_hours > 8760:
+        raise ValueError("since_hours must be between 1 and 8760")
+    now = datetime.now(UTC)
+    return now, (now - timedelta(hours=since_hours)).isoformat()
+
+
+def _duration_summary(values: list[int]) -> dict:
+    ordered = sorted(values)
+    if not ordered:
+        return {"median_ms": None, "p95_ms": None}
+    middle = len(ordered) // 2
+    median = ordered[middle] if len(ordered) % 2 else round(
+        (ordered[middle - 1] + ordered[middle]) / 2
+    )
+    return {
+        "median_ms": median,
+        "p95_ms": ordered[max(0, int((len(ordered) - 1) * 0.95))],
+    }
+
+
+def quality_collection(since_hours: int = 168) -> dict:
+    """Return platform-level task outcomes and actionable error-code counts."""
+    now, cutoff = _period_cutoff(since_hours)
+    with connect() as conn:
+        rows = [dict(row) for row in conn.execute(
+            """SELECT platform, mode, status, retry_count, result_count,
+                      error_code, started_at, finished_at, duration_ms
+               FROM collection_task_runs
+               WHERE started_at >= ?
+               ORDER BY started_at DESC, task_id ASC""",
+            (cutoff,),
+        ).fetchall()]
+
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    errors: dict[str, int] = defaultdict(int)
+    for row in rows:
+        grouped[row["platform"]].append(row)
+        if row["status"] in {"failed", "blocked", "interrupted"}:
+            errors[row["error_code"] or "UNKNOWN_ERROR"] += 1
+
+    platforms = []
+    for platform, runs in sorted(grouped.items()):
+        statuses: dict[str, int] = defaultdict(int)
+        for run in runs:
+            statuses[run["status"]] += 1
+        ended = len(runs) - statuses["running"]
+        succeeded = statuses["succeeded"]
+        durations = [run["duration_ms"] for run in runs if run["duration_ms"] is not None]
+        platforms.append({
+            "platform": platform,
+            "task_total": len(runs),
+            "task_running": statuses["running"],
+            "task_succeeded": succeeded,
+            "task_failed": statuses["failed"],
+            "task_blocked": statuses["blocked"],
+            "task_interrupted": statuses["interrupted"],
+            "success_rate": _rate(succeeded, ended),
+            "retry_task_count": sum(run["retry_count"] > 0 for run in runs),
+            "result_count": sum(run["result_count"] for run in runs),
+            "zero_result_task_count": sum(
+                run["status"] == "succeeded" and run["result_count"] == 0 for run in runs
+            ),
+            "duration": _duration_summary(durations),
+            "modes": dict(sorted({
+                mode: sum(run["mode"] == mode for run in runs)
+                for mode in {run["mode"] for run in runs}
+            }.items())),
+        })
+    total = len(rows)
+    succeeded_total = sum(row["status"] == "succeeded" for row in rows)
+    ended_total = sum(row["status"] != "running" for row in rows)
+    return {
+        "generated_at": now.isoformat(),
+        "period_hours": since_hours,
+        "summary": {
+            "task_total": total,
+            "task_succeeded": succeeded_total,
+            "task_failed": sum(row["status"] == "failed" for row in rows),
+            "task_blocked": sum(row["status"] == "blocked" for row in rows),
+            "task_interrupted": sum(row["status"] == "interrupted" for row in rows),
+            "task_running": sum(row["status"] == "running" for row in rows),
+            "success_rate": _rate(succeeded_total, ended_total),
+            "retry_task_count": sum(row["retry_count"] > 0 for row in rows),
+            "result_count": sum(row["result_count"] for row in rows),
+        },
+        "platforms": platforms,
+        "error_codes": [
+            {"code": code, "count": count}
+            for code, count in sorted(errors.items(), key=lambda item: (-item[1], item[0]))
+        ],
+    }
+
+
+def quality_demands(since_hours: int = 168) -> dict:
+    """Summarize append-only human feedback using each target's latest judgement."""
+    now, cutoff = _period_cutoff(since_hours)
+    with connect() as conn:
+        event_rows = [dict(row) for row in conn.execute(
+            """SELECT label, COUNT(*) AS count
+               FROM demand_feedback
+               WHERE created_at >= ?
+               GROUP BY label ORDER BY label""",
+            (cutoff,),
+        ).fetchall()]
+        current_rows = [dict(row) for row in conn.execute(
+            """WITH ranked AS (
+                   SELECT target_type, target_id, label, corrected_category,
+                          reason, created_at,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY target_type, target_id
+                              ORDER BY created_at DESC, id DESC
+                          ) AS rank
+                   FROM demand_feedback
+               )
+               SELECT target_type, target_id, label, corrected_category, reason, created_at
+               FROM ranked WHERE rank=1 AND created_at >= ?
+               ORDER BY created_at DESC, target_type, target_id""",
+            (cutoff,),
+        ).fetchall()]
+
+    event_counts = {row["label"]: int(row["count"]) for row in event_rows}
+    current_counts: dict[str, int] = defaultdict(int)
+    target_counts: dict[str, int] = defaultdict(int)
+    category_counts: dict[str, int] = defaultdict(int)
+    reason_counts: dict[str, int] = defaultdict(int)
+    for row in current_rows:
+        current_counts[row["label"]] += 1
+        target_counts[row["target_type"]] += 1
+        if row["corrected_category"]:
+            category_counts[row["corrected_category"]] += 1
+        if row["reason"]:
+            reason_counts[row["reason"].strip()] += 1
+
+    positive = current_counts["valid_demand"] + current_counts["category_correction"]
+    negative = current_counts["non_demand"]
+    adjudicated = positive + negative
+    return {
+        "generated_at": now.isoformat(),
+        "period_hours": since_hours,
+        "event_count": sum(event_counts.values()),
+        "current_target_count": len(current_rows),
+        "event_labels": dict(sorted(event_counts.items())),
+        "current_labels": dict(sorted(current_counts.items())),
+        "targets": dict(sorted(target_counts.items())),
+        "adjudication": {
+            "labeled_count": adjudicated,
+            "valid_demand_count": positive,
+            "non_demand_count": negative,
+            "valid_demand_rate": _rate(positive, adjudicated),
+            "note": "valid_demand 与 category_correction 计为有效需求；merge/split 属于结构性操作，不进入二分类分母",
+        },
+        "corrected_categories": [
+            {"category": category, "count": count}
+            for category, count in sorted(category_counts.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "common_reasons": [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
+        ],
+        "scope_note": "准确率/召回率以版本化 AI 预测与人工标签匹配计算，请使用 POST /api/v1/analysis/evaluate；本接口仅汇总人工反馈分布。",
+    }
+
+
+def quality_sources(since_hours: int = 168) -> dict:
+    """Expose current source-health grouping while stating its platform-adapter granularity."""
+    overview = quality_overview(since_hours)
+    sources = overview["sources"]
+    counts: dict[str, int] = defaultdict(int)
+    for source in sources:
+        counts[source["state"]] += 1
+    return {
+        "generated_at": overview["generated_at"],
+        "period_hours": since_hours,
+        "source_basis": "platform_adapter",
+        "source_entity_detail_available": False,
+        "state_counts": dict(sorted(counts.items())),
+        "items": sources,
+        "scope_note": "当前采集任务只持久化平台维度，尚无账号/关键词级来源实体；此处按平台适配器统计，不将平台伪装成具体来源。",
+    }
