@@ -247,9 +247,9 @@ def refresh_verification_batch(batch_id: int) -> dict | None:
         return dict(batch)
     run = refresh_discovery_run(link["run_id"])
     status = run.get("status", "failed")
-    if status in {"succeeded", "failed", "paused"}:
+    if status in {"succeeded", "partial", "failed", "paused"}:
         now = datetime.now(UTC).isoformat()
-        if status == "succeeded":
+        if status in {"succeeded", "partial"}:
             with connect() as conn:
                 candidates = conn.execute(
                     """SELECT c.* FROM keyword_candidates c
