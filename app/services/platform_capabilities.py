@@ -54,7 +54,7 @@ def _ensure_verification_schema() -> None:
         for platform in SEVEN_PLATFORMS:
             for operation in OPERATIONS:
                 conn.execute(
-                    """INSERT INTO platform_verification_runs
+                    """INSERT OR IGNORE INTO platform_verification_runs
                        (id,platform,operation,status,tested_at,engine,engine_version,environment,evidence,notes)
                        SELECT ?,?,?, 'skipped', ?, ?, '', 'dispatch-no-live-test', ?, ?
                        WHERE NOT EXISTS (
