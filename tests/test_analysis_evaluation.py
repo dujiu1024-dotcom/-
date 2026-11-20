@@ -100,3 +100,36 @@ def test_analysis_run_records_positive_and_negative_predictions(tmp_path, monkey
             "SELECT is_demand FROM analysis_predictions ORDER BY comment_id"
         ).fetchall()
     assert [row["is_demand"] for row in rows] == [0, 1]
+
+
+
+def test_evaluation_compares_model_and_prompt_versions(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "evaluation-versions.sqlite3")
+    db.upsert_comment(_comment("same-comment"))
+    with db.connect() as conn:
+        conn.execute(
+            """INSERT INTO analysis_runs(
+                started_at,provider,status,model_version,prompt_version
+            ) VALUES(?,?,?,?,?)""",
+            (datetime.now(UTC).isoformat(), "local_fallback", "succeeded",
+             "model-a", "prompt-v1"),
+        )
+        conn.execute(
+            """INSERT INTO analysis_runs(
+                started_at,provider,status,model_version,prompt_version
+            ) VALUES(?,?,?,?,?)""",
+            (datetime.now(UTC).isoformat(), "local_fallback", "succeeded",
+             "model-b", "prompt-v2"),
+        )
+    _prediction(1, "same-comment", True, "功能需求", "model-a", "prompt-v1")
+    _prediction(2, "same-comment", False, "其他", "model-b", "prompt-v2")
+    db.create_feedback(
+        target_type="comment", target_id="xhs::same-comment",
+        label="valid_demand", corrected_category="功能需求",
+    )
+    result = evaluate_analysis()
+    assert result["comparison"]["version_count"] == 2
+    by_version = {(v["model_version"], v["prompt_version"]): v for v in result["versions"]}
+    assert by_version[("model-a", "prompt-v1")]["precision"] == 1.0
+    assert by_version[("model-b", "prompt-v2")]["precision"] is None
+    assert result["comparison"]["best_precision"]["model_version"] == "model-a"
