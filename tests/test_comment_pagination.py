@@ -2,7 +2,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.models import CommentRecord
 from app.storage import db
 
 
