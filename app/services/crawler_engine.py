@@ -34,12 +34,12 @@ def _enable_isolated_profiles() -> None:
     if not config_file.is_file():
         raise RuntimeError("MediaCrawler 配置文件结构变化，无法确认浏览器隔离模式；请勿直接启动采集")
     source = config_file.read_text(encoding="utf-8")
-    patched, count = re.subn(r"(?m)^ENABLE_CDP_MODE\\s*=\\s*True\\s*$", "ENABLE_CDP_MODE = False", source)
+    patched, count = re.subn(r"(?m)^ENABLE_CDP_MODE\s*=\s*True\s*$", "ENABLE_CDP_MODE = False", source)
     if count != 1:
-        if not re.search(r"(?m)^ENABLE_CDP_MODE\\s*=\\s*False\\s*$", source):
+        if not re.search(r"(?m)^ENABLE_CDP_MODE\s*=\s*False\s*$", source):
             raise RuntimeError("未能安全关闭 MediaCrawler 的 CDP 共享浏览器模式，请检查上游版本")
         patched = source
-    patched, save_count = re.subn(r"(?m)^SAVE_LOGIN_STATE\\s*=\\s*False\\s*$", "SAVE_LOGIN_STATE = True", patched)
+    patched, save_count = re.subn(r"(?m)^SAVE_LOGIN_STATE\s*=\s*False\s*$", "SAVE_LOGIN_STATE = True", patched)
     if save_count:
         config_file.write_text(patched, encoding="utf-8")
     elif count:
@@ -49,7 +49,8 @@ def _enable_isolated_profiles() -> None:
 def install_engine() -> dict[str, Any]:
     ENGINE_ROOT.parent.mkdir(parents=True, exist_ok=True)
     if (ENGINE_ROOT / "main.py").is_file():
-        return {"installed": True, "already_installed": True, "root": str(ENGINE_ROOT)}
+        _enable_isolated_profiles()
+        return {"installed": True, "already_installed": True, "isolated_profiles": True, "root": str(ENGINE_ROOT)}
     if ENGINE_ROOT.exists() and any(ENGINE_ROOT.iterdir()):
         raise RuntimeError(f"引擎目录已存在但不完整：{ENGINE_ROOT}，请检查后手动处理")
     result = subprocess.run(["git", "clone", "--depth", "1", ENGINE_URL, str(ENGINE_ROOT)], capture_output=True, text=True, timeout=300, check=False)
