@@ -84,8 +84,14 @@ def test_discovery_executes_platform_search_and_imports_posts(tmp_path, monkeypa
 
     started = client.post(f"/api/v1/discovery/runs/{run['id']}/execute?platform=bilibili")
     assert started.status_code == 200
-    assert started.json()["status"] == "running"
-    assert job["id"] == started.json()["job_id"]
+    assert started.json()["status"] == "queued"
+    assert started.json()["current_task"]["platform"] == "bilibili"
+    with db.connect() as conn:
+        execution = json.loads(conn.execute(
+            "SELECT execution_json FROM discovery_runs WHERE id=?", (run["id"],)
+        ).fetchone()[0])
+    started_job = discovery._start_batch_task(run["id"], execution)
+    assert job["id"] == started_job["id"]
 
     folder = tmp_path / "exports" / "bilibili"
     folder.mkdir(parents=True)
