@@ -15,8 +15,10 @@ from app.services.demand import demand_candidates
 from app.services.settings import get_settings, update_recent_hours
 from app.services.source_tracking import (
     discover_candidates, list_candidates, list_sources, merge_sources,
-    review_candidate, update_source,
+    review_candidate, update_source, configure_schedule, list_schedules,
+    list_source_runs, save_checkpoint, get_checkpoint,
 )
+from app.services.scheduler import tick_schedules
 from app.storage.db import get_recent_hours, list_comments, upsert_comment
 
 router = APIRouter(prefix="/api/v1")
@@ -54,6 +56,19 @@ class SourceUpdateRequest(BaseModel):
     interval_minutes: int | None = Field(default=None, ge=15, le=10080)
     window_hours: int | None = Field(default=None, ge=1, le=8760)
     tracking_scope: str | None = None
+    tracking_target: str | None = Field(default=None, max_length=500)
+    tracking_verified: bool | None = None
+
+
+class SourceCheckpointRequest(BaseModel):
+    cursor: dict = Field(default_factory=dict)
+    last_content_id: str | None = None
+    window_start: str | None = None
+    window_end: str | None = None
+
+
+class SourceScheduleRequest(BaseModel):
+    enabled: bool
 
 
 class SourceMergeRequest(BaseModel):
@@ -235,6 +250,47 @@ def source_update(source_id: str, payload: SourceUpdateRequest):
         raise HTTPException(404, "追踪来源不存在") from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/sources/schedules")
+def source_schedules():
+    return {"count": len(items := list_schedules()), "items": items}
+
+
+@router.post("/sources/{source_id}/schedule")
+def source_schedule_update(source_id: str, payload: SourceScheduleRequest):
+    try:
+        return configure_schedule(source_id, payload.enabled)
+    except KeyError as exc:
+        raise HTTPException(404, "追踪来源不存在") from exc
+
+
+@router.get("/sources/runs")
+def source_runs(source_id: str | None = None, limit: int = Query(100, ge=1, le=500)):
+    items = list_source_runs(source_id, limit)
+    return {"count": len(items), "items": items}
+
+
+@router.post("/scheduler/tick")
+def scheduler_tick():
+    return tick_schedules()
+
+
+@router.get("/sources/{source_id}/checkpoint")
+def source_checkpoint(source_id: str):
+    try:
+        return get_checkpoint(source_id)
+    except KeyError as exc:
+        raise HTTPException(404, "追踪来源不存在") from exc
+
+
+@router.put("/sources/{source_id}/checkpoint")
+def source_checkpoint_update(source_id: str, payload: SourceCheckpointRequest):
+    try:
+        return save_checkpoint(source_id, payload.cursor, payload.last_content_id,
+                              payload.window_start, payload.window_end)
+    except KeyError as exc:
+        raise HTTPException(404, "追踪来源不存在") from exc
 
 
 @router.post("/sources/merge")
