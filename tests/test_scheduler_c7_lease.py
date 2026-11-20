@@ -57,7 +57,7 @@ def test_held_lease_defers_tick_without_touching_due_schedule(tmp_path, monkeypa
             VALUES('source-1',1,'2000-01-01T00:00:00+00:00','2000-01-01T00:00:00+00:00')
         """)
     assert scheduler._acquire_scheduler_lease("other-worker") == "other-worker"
-    monkeypatch.setattr(scheduler, "list_jobs", lambda: [])
+    monkeypatch.setattr(scheduler, "list_jobs", list)
     monkeypatch.setattr(
         scheduler, "start_job",
         lambda payload: (_ for _ in ()).throw(AssertionError("must not start crawler")),
