@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.services.discovery import (
+    execute_discovery_run, refresh_discovery_run,
     approve_discovered_source, create_discovery_run, create_strategy,
     ingest_discovered, list_discovered, list_strategies,
 )
@@ -55,6 +56,27 @@ def discovery_run_create(strategy_id: str):
     result = create_discovery_run(strategy_id)
     if not result:
         raise HTTPException(404, "搜索策略不存在")
+    return result
+
+
+@router.post("/runs/{run_id}/execute")
+def discovery_run_execute(run_id: str, platform: str, query_index: int = Query(0, ge=0, le=49)):
+    try:
+        result = execute_discovery_run(run_id, platform, query_index)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not result:
+        raise HTTPException(404, "发现批次不存在")
+    return result
+
+
+@router.get("/runs/{run_id}")
+def discovery_run_status(run_id: str):
+    result = refresh_discovery_run(run_id)
+    if not result:
+        raise HTTPException(404, "发现批次不存在")
     return result
 
 
