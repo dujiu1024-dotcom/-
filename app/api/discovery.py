@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 
 from app.services.discovery import (
     approve_discovered_source, create_discovery_run, create_strategy,
