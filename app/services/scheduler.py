@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -15,6 +16,8 @@ from app.storage.db import connect
 
 logger = logging.getLogger(__name__)
 _tick_lock = threading.Lock()
+_LEASE_NAME = "source-scheduler-tick"
+_DEFAULT_LEASE_TTL_SECONDS = 120
 
 
 def _now() -> datetime:
@@ -23,6 +26,64 @@ def _now() -> datetime:
 
 def _iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat()
+
+
+def _lease_ttl_seconds() -> int:
+    try:
+        configured = int(os.getenv("SCHEDULER_LEASE_TTL_SECONDS", str(_DEFAULT_LEASE_TTL_SECONDS)))
+    except ValueError:
+        configured = _DEFAULT_LEASE_TTL_SECONDS
+    return max(30, min(configured, 900))
+
+
+def _ensure_lease_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scheduler_leases (
+            lease_name TEXT PRIMARY KEY,
+            owner_token TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+
+def _acquire_scheduler_lease(
+    owner_token: str | None = None,
+    now: datetime | None = None,
+    ttl_seconds: int | None = None,
+) -> str | None:
+    """Atomically acquire the SQLite-backed lease shared by scheduler processes."""
+    owner = owner_token or uuid.uuid4().hex
+    current = now or _now()
+    timestamp = _iso(current)
+    expires = _iso(current + timedelta(seconds=max(30, ttl_seconds or _lease_ttl_seconds())))
+    with connect() as conn:
+        _ensure_lease_schema(conn)
+        # BEGIN IMMEDIATE serializes competing writers before checking lease expiry.
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute("""
+            INSERT INTO scheduler_leases(lease_name,owner_token,expires_at,updated_at)
+            VALUES(?,?,?,?)
+            ON CONFLICT(lease_name) DO UPDATE SET
+                owner_token=excluded.owner_token,
+                expires_at=excluded.expires_at,
+                updated_at=excluded.updated_at
+            WHERE scheduler_leases.expires_at <= excluded.updated_at
+        """, (_LEASE_NAME, owner, expires, timestamp))
+        if cursor.rowcount != 1:
+            return None
+    return owner
+
+
+def _release_scheduler_lease(owner_token: str) -> bool:
+    """Release only the lease still owned by this tick; stale owners are harmless."""
+    with connect() as conn:
+        _ensure_lease_schema(conn)
+        cursor = conn.execute(
+            "DELETE FROM scheduler_leases WHERE lease_name=? AND owner_token=?",
+            (_LEASE_NAME, owner_token),
+        )
+        return cursor.rowcount == 1
 
 
 def _tick_schedules(limit: int = 1) -> dict[str, Any]:
@@ -123,11 +184,17 @@ def _tick_schedules(limit: int = 1) -> dict[str, Any]:
 def tick_schedules(limit: int = 1) -> dict[str, Any]:
     if not _tick_lock.acquire(blocking=False):
         return {"started": [], "reconciled": 0, "deferred": "scheduler_busy"}
+    owner = _acquire_scheduler_lease()
+    if owner is None:
+        _tick_lock.release()
+        return {"started": [], "reconciled": 0, "deferred": "scheduler_lease_held"}
     try:
         return _tick_schedules(limit)
     finally:
-        _tick_lock.release()
-
+        try:
+            _release_scheduler_lease(owner)
+        finally:
+            _tick_lock.release()
 
 
 def schedule_loop(stop_event, interval_seconds: int = 30) -> None:
