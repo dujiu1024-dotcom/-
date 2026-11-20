@@ -67,6 +67,12 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `GET /api/v1/comments?since_hours=72`（省略时使用配置窗口）
 - `POST /api/v1/analysis/run`
 - `GET /api/v1/demands`
+- `POST /api/v1/keywords/expand?project_id=...`：从已采集评论/需求分析生成待审核候选词
+- `GET /api/v1/keywords/candidates?project_id=...&status=pending&limit=100&offset=0` / `GET /api/v1/keywords/candidates/{id}`
+- `POST /api/v1/keywords/candidates/{id}/review`：通过、驳回、合并、暂缓、停用、重新启用
+- `POST /api/v1/keywords/verification-batches` / `GET /api/v1/keywords/verification-batches/{id}`：创建/查询按平台执行的试搜批次
+- `GET /api/v1/keywords/quality-thresholds?project_id=...` / `PUT /api/v1/keywords/quality-thresholds?project_id=...`
+- `POST /api/v1/keywords/candidates/{id}/include`：仅审核通过的候选词可纳入同项目正式搜索策略
 - `GET /api/v1/analytics/trends?since_hours=720&bucket=day`
 - `GET /api/v1/discovery/strategies?project_id=...` / `POST /api/v1/discovery/projects/{project_id}/strategies`
 - `POST /api/v1/discovery/strategies/{strategy_id}/runs`：生成发现批次及查询词清单
@@ -102,3 +108,14 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - 趋势基于已分析的评论证据；需要定期运行分析才能累积时间序列。
 - 本版本一次只允许一个采集任务，避免无控制并发。
 - 请遵守平台条款，低频采集，仅采集本人有权访问的公开内容。
+
+
+## AI 搜索词扩展工作流
+
+1. 在采集库项目中进入「搜索词实验」，从已入库评论/需求分析生成候选词。模型输出必须关联来源评论、原始表达和生成理由；未配置模型或调用失败时使用规则降级。
+2. 候选词先进入待审核状态；同义表达归一、项目内去重，黑名单通过 `keyword_blacklist` 设置项配置。
+3. 勾选少量候选词，选择平台创建试搜批次。批次复用全网发现后台队列，按每词结果上限执行；只对已接入平台执行真实搜索。
+4. 指标包括命中量、有效需求量、标题重复率、无关率、失败原因和证据摘要。质量阈值仅给出判断，不会自动审核。
+5. 人工通过后，才可选择同项目搜索策略纳入；审核动作与策略变更保留审计记录。
+
+`requested_limit` 控制每个候选词搜索结果上限（1–100）；平台登录、账号授权和实际搜索结果仍需在本机验证。
