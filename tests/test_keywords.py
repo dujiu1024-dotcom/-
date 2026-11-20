@@ -232,3 +232,27 @@ def test_llm_failure_falls_back_to_rules(tmp_path, monkeypatch):
     result = keywords.generate_candidates("fallback-project")
     assert result["generation_method"] == "rule_fallback"
     assert result["created"] == 1
+
+
+
+def test_llm_candidate_metadata_is_persisted(tmp_path, monkeypatch):
+    import json
+    from app.services import keywords
+    _insert_comment(monkeypatch, tmp_path)
+    monkeypatch.setattr(keywords, "provider_status", lambda: {"configured": True, "model": "test-model"})
+    monkeypatch.setattr(keywords, "expand_keyword_batch", lambda sources: [{
+        "source_ref": sources[0]["source_ref"],
+        "candidates": [{"keyword": "Excel 批量处理工具", "category": "场景词",
+            "reason": "来源明确提到批量处理需求", "original_expression": sources[0]["text"],
+            "confidence": 0.91, "suggested_platforms": ["bilibili", "zhihu"],
+            "negative_terms": ["Excel教程"]}]
+    }])
+    result = keywords.generate_candidates("llm-project")
+    assert result["generation_method"] == "llm"
+    item = keywords.list_candidates("llm-project")["items"][0]
+    assert item["confidence"] == 0.91
+    assert item["generation_model"] == "test-model"
+    assert item["prompt_version"] == "keyword-expansion-v2"
+    detail = keywords.get_candidate(item["id"])
+    assert detail["suggested_platforms"] == ["bilibili", "zhihu"]
+    assert detail["negative_terms"] == ["Excel教程"]
