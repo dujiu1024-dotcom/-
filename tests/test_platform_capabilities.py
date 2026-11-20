@@ -24,7 +24,9 @@ def test_capability_matrix_lists_seven_platforms_and_five_operations(tmp_path, m
             "search_content", "fetch_content_detail", "fetch_comments",
             "fetch_replies", "creator_posts"
         }
-        assert all(value["verification_status"] == "not_tested"
+        assert all(value["verification_status"] == "skipped"
+                   for value in platform["operations"].values())
+        assert all("跳过真机验证" in value["evidence"]
                    for value in platform["operations"].values())
 
 
