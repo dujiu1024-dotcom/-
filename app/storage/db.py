@@ -105,7 +105,7 @@ def connect() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_keyword_candidates_project ON keyword_candidates(project_id,status);
         CREATE INDEX IF NOT EXISTS idx_keyword_verification_batch ON keyword_verification_results(batch_id);
     """)
-\n    conn.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('recent_hours',?,?)",
+    conn.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('recent_hours',?,?)",
                  (str(DEFAULT_RECENT_HOURS), datetime.now(UTC).isoformat()))
     conn.commit()
     return conn
