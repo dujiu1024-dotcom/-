@@ -290,41 +290,6 @@ def refresh_verification_batch(batch_id: int) -> dict | None:
 
 
 def get_verification_batch(batch_id: int) -> dict | None:
-    with connect() as conn:
-        row = conn.execute("SELECT * FROM keyword_verification_batches WHERE id=?", (batch_id,)).fetchone()
-        if not row:
-            return None
-    return refresh_verification_batch(batch_id)
-
-
-def update_quality_thresholds(project_id: str, values: dict) -> dict:
-    now = datetime.now(UTC).isoformat()
-    defaults = {"min_hits": 3, "min_valid_demands": 1,
-                "max_duplicate_rate": 0.7, "max_irrelevant_rate": 0.6}
-    defaults.update(values)
-    if not 0 <= defaults["max_duplicate_rate"] <= 1 or not 0 <= defaults["max_irrelevant_rate"] <= 1:
-        raise ValueError("重复率和无关率阈值必须在 0 到 1 之间")
-    with connect() as conn:
-        conn.execute("""INSERT INTO keyword_quality_thresholds
-            (project_id,min_hits,min_valid_demands,max_duplicate_rate,max_irrelevant_rate,updated_at)
-            VALUES(?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
-            min_hits=excluded.min_hits,min_valid_demands=excluded.min_valid_demands,
-            max_duplicate_rate=excluded.max_duplicate_rate,max_irrelevant_rate=excluded.max_irrelevant_rate,
-            updated_at=excluded.updated_at""",
-            (project_id, defaults["min_hits"], defaults["min_valid_demands"],
-             defaults["max_duplicate_rate"], defaults["max_irrelevant_rate"], now))
-    return {"project_id": project_id, **defaults, "updated_at": now}
-
-
-def get_quality_thresholds(project_id: str) -> dict:
-    with connect() as conn:
-        row = conn.execute("SELECT * FROM keyword_quality_thresholds WHERE project_id=?",
-                           (project_id,)).fetchone()
-    return dict(row) if row else {"project_id": project_id, "min_hits": 3,
-        "min_valid_demands": 1, "max_duplicate_rate": 0.7, "max_irrelevant_rate": 0.6}
-
-
-def get_verification_batch(batch_id: int) -> dict | None:
     result = refresh_verification_batch(batch_id)
     if not result:
         return None
