@@ -71,11 +71,23 @@ def connect() -> sqlite3.Connection:
             keyword TEXT NOT NULL, normalized_keyword TEXT NOT NULL, category TEXT NOT NULL DEFAULT '场景表达',
             source_type TEXT NOT NULL, source_platform TEXT, source_comment_id TEXT, source_content_id TEXT,
             source_content_url TEXT, source_text TEXT NOT NULL, generation_reason TEXT NOT NULL,
-            generation_method TEXT NOT NULL DEFAULT 'rule',
+            generation_method TEXT NOT NULL DEFAULT 'rule', confidence REAL NOT NULL DEFAULT 0.5,
+            suggested_platforms_json TEXT NOT NULL DEFAULT '[]', negative_terms_json TEXT NOT NULL DEFAULT '[]',
+            generation_model TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT 'keyword-expansion-v1',
             status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','merged','deferred','disabled','included')),
             merged_into_id INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             UNIQUE(project_id, normalized_keyword), FOREIGN KEY(merged_into_id) REFERENCES keyword_candidates(id)
         );
+        CREATE TABLE IF NOT EXISTS keyword_candidate_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER NOT NULL,
+            source_ref TEXT NOT NULL, source_type TEXT NOT NULL DEFAULT 'comment',
+            source_platform TEXT, source_comment_id TEXT, source_content_id TEXT,
+            source_content_url TEXT, evidence_quote TEXT NOT NULL,
+            demand_cluster_id TEXT, created_at TEXT NOT NULL,
+            UNIQUE(candidate_id,source_ref),
+            FOREIGN KEY(candidate_id) REFERENCES keyword_candidates(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_keyword_candidate_evidence_candidate ON keyword_candidate_evidence(candidate_id);
         CREATE TABLE IF NOT EXISTS keyword_reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER NOT NULL,
             action TEXT NOT NULL CHECK(action IN ('approve','reject','merge','defer','disable','include','reactivate')),
@@ -91,7 +103,9 @@ def connect() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS keyword_verification_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL, candidate_id INTEGER NOT NULL,
             hit_count INTEGER NOT NULL DEFAULT 0, valid_demand_count INTEGER NOT NULL DEFAULT 0,
-            duplicate_rate REAL, irrelevant_rate REAL, failure_reason TEXT, evidence_json TEXT NOT NULL DEFAULT '[]',
+            duplicate_rate REAL, irrelevant_rate REAL, unique_author_count INTEGER NOT NULL DEFAULT 0,
+            demand_rate REAL NOT NULL DEFAULT 0, platform_coverage REAL NOT NULL DEFAULT 0,
+            freshness_hours REAL, failure_reason TEXT, evidence_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL, UNIQUE(batch_id,candidate_id),
             FOREIGN KEY(batch_id) REFERENCES keyword_verification_batches(id),
             FOREIGN KEY(candidate_id) REFERENCES keyword_candidates(id)
@@ -105,6 +119,27 @@ def connect() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_keyword_candidates_project ON keyword_candidates(project_id,status);
         CREATE INDEX IF NOT EXISTS idx_keyword_verification_batch ON keyword_verification_results(batch_id);
     """)
+    candidate_columns = {row[1] for row in conn.execute("PRAGMA table_info(keyword_candidates)")}
+    candidate_migrations = {
+        "confidence": "REAL NOT NULL DEFAULT 0.5",
+        "suggested_platforms_json": "TEXT NOT NULL DEFAULT '[]'",
+        "negative_terms_json": "TEXT NOT NULL DEFAULT '[]'",
+        "generation_model": "TEXT NOT NULL DEFAULT ''",
+        "prompt_version": "TEXT NOT NULL DEFAULT 'keyword-expansion-v1'",
+    }
+    for column, definition in candidate_migrations.items():
+        if column not in candidate_columns:
+            conn.execute(f"ALTER TABLE keyword_candidates ADD COLUMN {column} {definition}")
+    result_columns = {row[1] for row in conn.execute("PRAGMA table_info(keyword_verification_results)")}
+    result_migrations = {
+        "unique_author_count": "INTEGER NOT NULL DEFAULT 0",
+        "demand_rate": "REAL NOT NULL DEFAULT 0",
+        "platform_coverage": "REAL NOT NULL DEFAULT 0",
+        "freshness_hours": "REAL",
+    }
+    for column, definition in result_migrations.items():
+        if column not in result_columns:
+            conn.execute(f"ALTER TABLE keyword_verification_results ADD COLUMN {column} {definition}")
     conn.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('recent_hours',?,?)",
                  (str(DEFAULT_RECENT_HOURS), datetime.now(UTC).isoformat()))
     conn.commit()
