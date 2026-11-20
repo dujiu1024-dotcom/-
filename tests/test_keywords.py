@@ -236,7 +236,6 @@ def test_llm_failure_falls_back_to_rules(tmp_path, monkeypatch):
 
 
 def test_llm_candidate_metadata_is_persisted(tmp_path, monkeypatch):
-    import json
     from app.services import keywords
     _insert_comment(monkeypatch, tmp_path)
     monkeypatch.setattr(keywords, "provider_status", lambda: {"configured": True, "model": "test-model"})
