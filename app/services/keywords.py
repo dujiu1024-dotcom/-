@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -261,7 +262,7 @@ def include_candidate(candidate_id: int, strategy_id: str, reviewer: str = "loca
 
 
 def start_verification_batch(project_id: str, platform: str, candidate_ids: list[int],
-                             requested_limit: int = 20) -> dict:
+                             requested_limit: int = 20, idempotency_key: str | None = None) -> dict:
     from app.services.crawler_engine import SUPPORTED
     from app.services.discovery import create_discovery_run, create_strategy, execute_discovery_batch
 
@@ -280,36 +281,100 @@ def start_verification_batch(project_id: str, platform: str, candidate_ids: list
             [project_id, *ids]).fetchall()
     if len(rows) != len(ids):
         raise ValueError("候选词不存在或不属于当前项目")
-    strategy = create_strategy(project_id, {"name": f"候选词验证-{datetime.now(UTC).strftime('%H%M%S')}",
-        "topic": "AI 搜索词质量验证", "terms": [row["keyword"] for row in rows],
-        "platforms": [platform], "enabled": True})
-    if not strategy:
-        raise ValueError("研究项目不存在；请使用采集库中的项目 ID")
-    run = create_discovery_run(strategy["id"])
-    now = datetime.now(UTC).isoformat()
-    with connect() as conn:
-        cur = conn.execute(
-            "INSERT INTO keyword_verification_batches(project_id,platform,status,requested_limit,created_at) VALUES(?,?, 'queued', ?, ?)",
-            (project_id, platform, requested_limit, now))
-        batch_id = cur.lastrowid
-        conn.execute("CREATE TABLE IF NOT EXISTS keyword_verification_run_links (batch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL)")
-        conn.execute("INSERT INTO keyword_verification_run_links(batch_id,run_id) VALUES(?,?)",
-                     (batch_id, run["id"]))
-        conn.execute("""CREATE TABLE IF NOT EXISTS keyword_verification_batch_candidates (
-            batch_id INTEGER NOT NULL, candidate_id INTEGER NOT NULL, PRIMARY KEY(batch_id,candidate_id))""")
-        conn.executemany("INSERT INTO keyword_verification_batch_candidates(batch_id,candidate_id) VALUES(?,?)",
-                         [(batch_id, row["id"]) for row in rows])
-    try:
-        execute_discovery_batch(run["id"], [platform], max_tasks=100, max_posts=requested_limit)
-    except (ValueError, RuntimeError) as exc:
-        with connect() as conn:
-            conn.execute("UPDATE keyword_verification_batches SET status='failed',finished_at=?,error=? WHERE id=?",
-                         (datetime.now(UTC).isoformat(), str(exc)[:1000], batch_id))
-        raise
-    return {"batch_id": batch_id, "run_id": run["id"], "project_id": project_id,
-            "platform": platform, "status": "queued", "candidate_count": len(rows),
-            "requested_limit": requested_limit}
 
+    request_payload = json.dumps({
+        "project_id": project_id, "platform": platform,
+        "candidate_ids": sorted(ids), "requested_limit": requested_limit,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    request_hash = hashlib.sha256(request_payload.encode("utf-8")).hexdigest()
+    key = (idempotency_key or "").strip() or f"auto:{request_hash}"
+    now = datetime.now(UTC).isoformat()
+
+    # Reserve the key atomically. A replay returns the original batch and never
+    # creates another strategy, discovery run, or worker queue.
+    with connect() as conn:
+        inserted = conn.execute(
+            """INSERT OR IGNORE INTO keyword_verification_idempotency
+               (idempotency_key,request_hash,created_at) VALUES(?,?,?)""",
+            (key, request_hash, now)).rowcount
+        reservation = conn.execute(
+            "SELECT request_hash,batch_id FROM keyword_verification_idempotency WHERE idempotency_key=?",
+            (key,)).fetchone()
+        if reservation["request_hash"] != request_hash:
+            raise ValueError("幂等键已被不同的试搜请求使用")
+        if not inserted:
+            if reservation["batch_id"] is None:
+                raise ValueError("相同试搜请求正在处理中，请稍后重试")
+            existing = conn.execute(
+                "SELECT * FROM keyword_verification_batches WHERE id=?",
+                (reservation["batch_id"],)).fetchone()
+            if not existing:
+                raise ValueError("幂等记录关联的验证批次不存在")
+            run_link = conn.execute(
+                "SELECT run_id FROM keyword_verification_run_links WHERE batch_id=?",
+                (reservation["batch_id"],)).fetchone()
+            candidate_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM keyword_verification_batch_candidates WHERE batch_id=?",
+                (reservation["batch_id"],)).fetchone()["n"]
+            return {
+                "batch_id": existing["id"], "run_id": run_link["run_id"] if run_link else None,
+                "project_id": existing["project_id"], "platform": existing["platform"],
+                "status": existing["status"], "candidate_count": candidate_count,
+                "requested_limit": existing["requested_limit"], "idempotent_replay": True,
+            }
+
+    batch_id = None
+    try:
+        strategy = create_strategy(project_id, {
+            "name": f"候选词验证-{datetime.now(UTC).strftime('%H%M%S')}",
+            "topic": "AI 搜索词质量验证",
+            "terms": [row["keyword"] for row in rows],
+            "platforms": [platform], "enabled": True,
+        })
+        if not strategy:
+            raise ValueError("研究项目不存在；请使用采集库中的项目 ID")
+        run = create_discovery_run(strategy["id"])
+        with connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO keyword_verification_batches
+                   (project_id,platform,status,requested_limit,created_at)
+                   VALUES(?,?, 'queued', ?, ?)""",
+                (project_id, platform, requested_limit, now))
+            batch_id = cur.lastrowid
+            conn.execute("""CREATE TABLE IF NOT EXISTS keyword_verification_run_links
+                (batch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL)""")
+            conn.execute(
+                "INSERT INTO keyword_verification_run_links(batch_id,run_id) VALUES(?,?)",
+                (batch_id, run["id"]))
+            conn.execute("""CREATE TABLE IF NOT EXISTS keyword_verification_batch_candidates (
+                batch_id INTEGER NOT NULL, candidate_id INTEGER NOT NULL,
+                PRIMARY KEY(batch_id,candidate_id))""")
+            conn.executemany(
+                "INSERT INTO keyword_verification_batch_candidates(batch_id,candidate_id) VALUES(?,?)",
+                [(batch_id, row["id"]) for row in rows])
+            conn.execute(
+                "UPDATE keyword_verification_idempotency SET batch_id=? WHERE idempotency_key=?",
+                (batch_id, key))
+        try:
+            execute_discovery_batch(run["id"], [platform], max_tasks=100, max_posts=requested_limit)
+        except (ValueError, RuntimeError) as exc:
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE keyword_verification_batches SET status='failed',finished_at=?,error=? WHERE id=?",
+                    (datetime.now(UTC).isoformat(), str(exc)[:1000], batch_id))
+            raise
+        return {
+            "batch_id": batch_id, "run_id": run["id"], "project_id": project_id,
+            "platform": platform, "status": "queued", "candidate_count": len(rows),
+            "requested_limit": requested_limit, "idempotent_replay": False,
+        }
+    except Exception:
+        if batch_id is None:
+            with connect() as conn:
+                conn.execute(
+                    "DELETE FROM keyword_verification_idempotency WHERE idempotency_key=? AND batch_id IS NULL",
+                    (key,))
+        raise
 
 def refresh_verification_batch(batch_id: int) -> dict | None:
     from app.services.discovery import refresh_discovery_run

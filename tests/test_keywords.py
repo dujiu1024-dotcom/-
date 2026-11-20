@@ -374,3 +374,45 @@ def test_verification_sample_limit_is_bounded_to_10_30(tmp_path, monkeypatch):
             "SELECT requested_limit FROM keyword_verification_batches WHERE id=?",
             (batch["batch_id"],)).fetchone()
     assert saved["requested_limit"] == 10
+
+
+
+def test_verification_request_is_idempotent(tmp_path, monkeypatch):
+    from app.storage import db
+    from app.services import discovery
+    from app.services.collection_library import create_project
+    from app.services.keywords import start_verification_batch
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "verification-idempotency.sqlite3")
+    discovery._ensure()
+    project_id = create_project("试搜幂等项目")["id"]
+    now = datetime.now(UTC).isoformat()
+    with db.connect() as conn:
+        conn.execute("""INSERT INTO keyword_candidates
+            (project_id,keyword,normalized_keyword,category,source_type,source_text,
+             generation_reason,status,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (project_id, "自动整理工具", "自动整理工具", "场景表达", "comment",
+             "需要自动整理工具", "来源明确", "pending", now, now))
+        candidate_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    calls = []
+    monkeypatch.setattr(discovery, "execute_discovery_batch",
+                        lambda run_id, platforms, **kwargs: calls.append(
+                            (run_id, platforms, kwargs)) or {"status": "queued"})
+    first = start_verification_batch(
+        project_id, "bilibili", [candidate_id], 20, "retry-key-001")
+    replay = start_verification_batch(
+        project_id, "bilibili", [candidate_id], 20, "retry-key-001")
+
+    assert first["batch_id"] == replay["batch_id"]
+    assert first["run_id"] == replay["run_id"]
+    assert first["idempotent_replay"] is False
+    assert replay["idempotent_replay"] is True
+    assert len(calls) == 1
+
+    # A distinct key represents an intentional new validation, not a retry.
+    second_run = start_verification_batch(
+        project_id, "bilibili", [candidate_id], 20, "retry-key-002")
+    assert second_run["batch_id"] != first["batch_id"]
+    assert len(calls) == 2
