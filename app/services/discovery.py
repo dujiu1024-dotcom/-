@@ -581,7 +581,7 @@ def _start_batch_task(run_id, execution, lease_owner=None):
             INSERT INTO discovery_task_attempts
                 (id,task_id,attempt_number,status,started_at,export_dir)
             VALUES(?,?,?,?,?,?)
-        """, (uuid.uuid4().hex, task_row["id"], task_row["attempt_count"], "starting",
+        """, (uuid.uuid4().hex, task_row["id"], attempt_number, "starting",
               started_at.isoformat(), relative_export_dir))
     if lease_owner and not _renew_worker_lease(lease_owner):
         with connect() as conn:

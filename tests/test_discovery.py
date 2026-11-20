@@ -404,7 +404,7 @@ def test_rate_limit_retry_persists_attempt_and_platform_cooldown(tmp_path, monke
     assert task["max_attempts"] == 4
     assert task["error_code"] == "COLLECTION_RATE_LIMITED"
     assert task["next_retry_at"]
-    assert attempts >= 1
+    assert attempts == 1
 
 
 def test_non_retryable_auth_failure_is_blocked_without_retry(tmp_path, monkeypatch):
