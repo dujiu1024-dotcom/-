@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import DATA_ROOT, ENGINE_ROOT, ENGINE_URL
+from app.services.collection_errors import classify_collection_error
 
 SUPPORTED = {"xhs": "xhs", "douyin": "dy", "kuaishou": "ks", "bilibili": "bili", "weibo": "wb", "tieba": "tieba", "zhihu": "zhihu"}
 MODES = {"search", "detail", "creator"}
@@ -131,6 +132,16 @@ def _watch_job(job_id: str) -> None:
         job["status"] = "succeeded" if code == 0 else "failed"
         job["exit_code"] = code
         job["finished_at"] = _now()
+        if code != 0:
+            log_path = Path(job["log_file"])
+            log_excerpt = log_path.read_text(encoding="utf-8", errors="replace")[-12000:] if log_path.is_file() else ""
+            classification = classify_collection_error(log_excerpt or f"采集进程退出码：{code}")
+            job["error_category"] = classification["category"]
+            job["error_code"] = classification["code"]
+            job["error_message"] = classification["message"][-2000:]
+            job["retryable"] = classification["retryable"]
+            job["manual_intervention"] = classification["manual_intervention"]
+            job["error_hint"] = classification["hint"]
         _processes.pop(job_id, None)
 
 
