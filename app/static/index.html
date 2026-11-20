@@ -14,7 +14,7 @@
 <button data-page="discovery"><span class="ico">⌕</span>全网发现</button>
 <button data-page="library"><span class="ico">▤</span>采集库 <span id="navSourceCount" class="source-count"></span></button>
 <button data-page="comments"><span class="ico">☷</span>评论数据</button>
-<button data-page="demands"><span class="ico">◈</span>需求分析</button>
+<button data-page="demands"><span class="ico">◈</span>需求分析</button>\n<button data-page="keywords"><span class="ico">⌁</span>搜索词实验</button>
 </nav></div>
 <div><div class="navgroup">系统管理</div><nav class="nav">
 <button data-page="tasks"><span class="ico">◷</span>采集任务</button>
@@ -76,7 +76,23 @@
 <div class="panel"><div class="panelhead"><div><h2>需求强度排行</h2><p>结合评论量、独立用户、跨平台覆盖、互动与近期活跃度</p></div><button class="secondary small" id="reloadDemands">刷新排行</button></div><div id="demandTable" class="empty">读取分析结果…</div></div>
 <div class="panel"><div class="panelhead"><div><h2>需求趋势</h2><p>需要定期运行分析，才能形成连续历史数据。</p></div><select id="trendBucket" class="field" style="max-width:130px"><option value="day">按天</option><option value="hour">按小时</option></select></div><div id="trendView" class="chartplaceholder">运行分析后查看趋势数据</div></div>
 </section>
-<section class="page" id="page-tasks">
+
+<section class="page" id="page-keywords">
+<div class="pagehead"><div><h1>搜索词实验</h1><p>从真实评论与需求中扩展搜索表达；候选词经验证和人工审核后，才进入正式策略。</p></div><button id="generateKeywords">AI 扩展候选词</button></div>
+<div class="notice">候选词默认待审核，不会自动进入采集策略。先小批量试搜，查看有效需求、重复率和无关率，再决定通过、驳回、合并或暂缓。</div>
+<div class="panel">
+<div class="toolbar"><select id="keywordProject" class="field"></select><select id="keywordStatus" class="field"><option value="">全部状态</option><option value="pending">待审核</option><option value="approved">已通过</option><option value="rejected">已驳回</option><option value="deferred">暂缓</option><option value="merged">已合并</option><option value="disabled">已停用</option><option value="included">已纳入</option></select><button id="reloadKeywords" class="secondary">刷新</button></div>
+<div class="toolbar"><select id="keywordPlatform" class="field"><option value="bilibili">B站</option><option value="zhihu">知乎</option><option value="xhs">小红书</option><option value="douyin">抖音</option><option value="weibo">微博</option><option value="tieba">贴吧</option><option value="kuaishou">快手</option></select><button id="verifyKeywords" class="secondary">验证选中候选词</button><select id="keywordStrategy" class="field"><option value="">选择正式搜索策略</option></select><button id="includeKeyword" class="secondary">纳入已通过词</button></div>
+<div id="keywordTable" class="empty">加载候选词…</div><div class="pager"><span id="keywordPageInfo">—</span><div class="pagercontrols"><button id="keywordPrev" class="secondary small">上一页</button><button id="keywordNext" class="secondary small">下一页</button></div></div>
+</div>
+<div class="grid2">
+<div class="panel"><div class="panelhead"><div><h2>质量阈值</h2><p>阈值只辅助判断，不自动审核或纳入策略。</p></div></div>
+<div class="formgrid"><div class="formfield"><label>最低命中量</label><input id="thresholdHits" type="number" min="0" value="3"></div><div class="formfield"><label>最低有效需求量</label><input id="thresholdValid" type="number" min="0" value="1"></div><div class="formfield"><label>最高重复率（0-1）</label><input id="thresholdDuplicate" type="number" min="0" max="1" step="0.05" value="0.7"></div><div class="formfield"><label>最高无关率（0-1）</label><input id="thresholdIrrelevant" type="number" min="0" max="1" step="0.05" value="0.6"></div></div>
+<div style="display:flex;justify-content:flex-end;margin-top:12px"><button id="saveKeywordThresholds" class="secondary">保存阈值</button></div></div>
+<div class="panel"><div class="panelhead"><div><h2>最近验证批次</h2><p>查看真实执行状态和指标结果</p></div></div><div id="verificationResult" class="empty">尚无验证批次</div></div>
+</div>
+</section>
+\n<section class="page" id="page-tasks">
 <div class="pagehead"><div><h1>采集任务</h1><p>查看任务状态、执行日志和采集结果导入情况。</p></div><button class="secondary" id="importExports">导入采集结果</button></div>
 <div class="panel"><div class="toolbar"><select id="taskStatus" class="field"><option value="">全部状态</option><option value="running">运行中</option><option value="succeeded">已完成</option><option value="failed">失败</option></select><button id="reloadJobs" class="secondary">刷新任务</button></div><div id="jobTable" class="empty">读取任务…</div></div>
 <div class="panel"><div class="panelhead"><h2>任务运行日志</h2><span class="muted" id="logLabel">选择任务查看日志</span></div><pre id="jobLog" style="white-space:pre-wrap;max-height:330px;overflow:auto;background:#111b2a;color:#d9e3f0;padding:15px;border-radius:8px;font-size:11px">暂无日志</pre></div>
@@ -101,11 +117,11 @@
 <div class="toast" id="toast"></div>
 <script>
 const $=id=>document.getElementById(id);const state={page:'overview',projects:[],platforms:[],comments:{offset:0,limit:30,total:0,items:[]},jobs:[],selectedJob:null,commentItems:[]};
-const names={overview:'情报总览',discovery:'全网发现',library:'采集库',comments:'评论数据',demands:'需求分析',tasks:'采集任务',settings:'系统设置'};
+const names={overview:'情报总览',discovery:'全网发现',library:'采集库',comments:'评论数据',demands:'需求分析',keywords:'搜索词实验',tasks:'采集任务',settings:'系统设置'};
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,opts={}){const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.detail||r.statusText);return d}
 function toast(msg){$('toast').textContent=msg;$('toast').style.display='block';setTimeout(()=>$('toast').style.display='none',3200)}
-function go(page){state.page=page;document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='page-'+page));document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.page===page));$('crumb').textContent=names[page];if(page==='discovery')loadDiscovery();if(page==='library')renderProjects();if(page==='comments')loadComments();if(page==='demands')loadDemands();if(page==='tasks')loadJobs();if(page==='settings')loadSettings()}
+function go(page){state.page=page;document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='page-'+page));document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.page===page));$('crumb').textContent=names[page];if(page==='discovery')loadDiscovery();if(page==='library')renderProjects();if(page==='comments')loadComments();if(page==='demands')loadDemands();if(page==='keywords')loadKeywords();if(page==='tasks')loadJobs();if(page==='settings')loadSettings()}
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>go(b.dataset.page));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
 async function loadProjects(){const d=await api('/api/v1/collection/projects');state.projects=d.items||[];$('navSourceCount').textContent=state.projects.reduce((n,p)=>n+(p.source_count||0),0);$('mSources').textContent=state.projects.reduce((n,p)=>n+(p.source_count||0),0);renderProjects();renderOverviewProjects()}
 function renderOverviewProjects(){const p=state.projects.slice(0,4);$('overviewProjects').innerHTML=p.length?p.map(x=>'<div class="source"><div class="sourceinfo"><strong>'+esc(x.name)+'</strong><small>'+esc(x.description||'暂无说明')+'</small></div><span class="pill">'+(x.source_count||0)+' 个对象</span></div>').join(''):'<div class="empty">还没有采集项目。先建立一个主题，再逐步添加账号、内容或搜索规则。</div>'}
@@ -182,5 +198,38 @@ $('discoveryResults').onclick=async e=>{
  try{await api('/api/v1/discovery/results/'+b.dataset.approveContent+'/approve',{method:'POST'});toast('作者已加入采集库追踪');await loadProjects();await loadDiscovery()}catch(err){toast(err.message)}
 };
 
-async function init(){try{await Promise.all([loadPlatforms(),loadProjects()]);await loadOverview();if(state.page==='discovery')await loadDiscovery()}catch(e){toast(e.message)}}init();
+
+state.keywordOffset=0;state.keywordLimit=30;state.keywordRows=[];
+async function loadKeywords(){
+ try{
+  const projectId=$('keywordProject').value||state.projects[0]?.id||'';
+  if(!$('keywordProject').options.length)$('keywordProject').innerHTML=state.projects.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('');
+  const selected=$('keywordProject').value||projectId;
+  const status=$('keywordStatus').value,params=new URLSearchParams({project_id:selected,limit:String(state.keywordLimit),offset:String(state.keywordOffset)});
+  if(status)params.set('status',status);
+  const [data,strategies,thresholds]=await Promise.all([
+   api('/api/v1/keywords/candidates?'+params.toString()),
+   api('/api/v1/discovery/strategies?project_id='+encodeURIComponent(selected)),
+   api('/api/v1/keywords/quality-thresholds?project_id='+encodeURIComponent(selected))
+  ]);
+  state.keywordRows=data.items||[];
+  $('keywordStrategy').innerHTML='<option value="">选择正式搜索策略</option>'+(strategies.items||[]).map(s=>'<option value="'+esc(s.id)+'">'+esc(s.name)+'</option>').join('');
+  $('thresholdHits').value=thresholds.min_hits;$('thresholdValid').value=thresholds.min_valid_demands;
+  $('thresholdDuplicate').value=thresholds.max_duplicate_rate;$('thresholdIrrelevant').value=thresholds.max_irrelevant_rate;
+  $('keywordTable').innerHTML=state.keywordRows.length?'<div class="tablewrap"><table><tr><th><input type="checkbox" id="selectAllKeywords"></th><th>候选词 / 类别</th><th>来源表达</th><th>生成理由</th><th>状态</th><th>审核</th></tr>'+state.keywordRows.map(x=>'<tr><td><input type="checkbox" class="keywordCheck" value="'+x.id+'"></td><td><strong>'+esc(x.keyword)+'</strong><div class="muted">'+esc(x.category)+'</div></td><td>'+esc(x.source_text.slice(0,140))+'<div class="muted">'+esc(x.source_platform)+' · '+esc(x.source_comment_id)+'</div>'+(x.source_content_url?'<a href="'+esc(x.source_content_url)+'" target="_blank" rel="noreferrer">查看来源</a>':'')+'</td><td>'+esc(x.generation_reason)+'</td><td><span class="pill gray">'+esc(x.status)+'</span></td><td><div class="sourceactions"><button class="small" data-key-action="approve" data-key-id="'+x.id+'">通过</button><button class="danger small" data-key-action="reject" data-key-id="'+x.id+'">驳回</button><button class="secondary small" data-key-action="defer" data-key-id="'+x.id+'">暂缓</button><button class="secondary small" data-key-action="merge" data-key-id="'+x.id+'">合并</button></div></td></tr>').join('')+'</table></div>':'<div class="empty">暂无候选词。先运行 AI 扩展，或检查是否已有已分析评论。</div>';
+  $('keywordPageInfo').textContent='共 '+data.total+' 条 · 第 '+(Math.floor(state.keywordOffset/state.keywordLimit)+1)+' 页';
+  $('keywordPrev').disabled=state.keywordOffset===0;$('keywordNext').disabled=state.keywordOffset+state.keywordLimit>=data.total;
+ }catch(e){$('keywordTable').textContent=e.message}
+}
+function selectedKeywordIds(){return [...document.querySelectorAll('.keywordCheck:checked')].map(x=>Number(x.value))}
+$('keywordProject').onchange=()=>{state.keywordOffset=0;loadKeywords()};$('keywordStatus').onchange=()=>{state.keywordOffset=0;loadKeywords()};
+$('reloadKeywords').onclick=loadKeywords;$('keywordPrev').onclick=()=>{state.keywordOffset=Math.max(0,state.keywordOffset-state.keywordLimit);loadKeywords()};
+$('keywordNext').onclick=()=>{state.keywordOffset+=state.keywordLimit;loadKeywords()};
+$('generateKeywords').onclick=async()=>{try{const p=$('keywordProject').value;const d=await api('/api/v1/keywords/expand?project_id='+encodeURIComponent(p),{method:'POST'});toast('扩词完成：新增 '+d.created+' 个，重复 '+d.duplicates+' 个；方式 '+d.generation_method);await loadKeywords()}catch(e){toast(e.message)}};
+$('keywordTable').onclick=async e=>{const b=e.target.closest('[data-key-action]');if(!b)return;const action=b.dataset.keyAction,id=Number(b.dataset.keyId);try{let payload={action};if(action==='merge'){const target=prompt('请输入合并目标候选词 ID');if(!target)return;payload.target_candidate_id=Number(target)}await api('/api/v1/keywords/candidates/'+id+'/review',{method:'POST',body:JSON.stringify(payload)});toast('审核操作已保存');await loadKeywords()}catch(err){toast(err.message)}};
+$('keywordTable').onchange=e=>{if(e.target.id==='selectAllKeywords')document.querySelectorAll('.keywordCheck').forEach(x=>x.checked=e.target.checked)};
+$('verifyKeywords').onclick=async()=>{const ids=selectedKeywordIds();if(!ids.length){toast('请先勾选候选词');return}try{const d=await api('/api/v1/keywords/verification-batches',{method:'POST',body:JSON.stringify({project_id:$('keywordProject').value,platform:$('keywordPlatform').value,candidate_ids:ids,requested_limit:20})});$('verificationResult').textContent='验证批次已排队：'+d.batch_id+'；实际搜索由后台采集队列执行。';const poll=setInterval(async()=>{try{const x=await api('/api/v1/keywords/verification-batches/'+d.batch_id);$('verificationResult').innerHTML='<div class="muted">批次 '+x.id+' · '+esc(x.status)+' · 平台 '+esc(x.platform)+'</div>'+(x.results||[]).map(r=>'<div class="source"><div class="sourceinfo"><strong>'+esc(r.keyword)+'</strong><small>命中 '+r.hit_count+' · 有效需求 '+r.valid_demand_count+' · 重复率 '+r.duplicate_rate+' · 无关率 '+r.irrelevant_rate+'</small></div><span class="pill gray">'+(r.failure_reason?'未命中':'已评估')+'</span></div>').join('');if(['succeeded','failed'].includes(x.status))clearInterval(poll)}catch(err){clearInterval(poll);$('verificationResult').textContent=err.message}},4000)}catch(e){toast(e.message)}};
+$('includeKeyword').onclick=async()=>{const ids=selectedKeywordIds(),strategy=$('keywordStrategy').value;if(!ids.length||!strategy){toast('请勾选候选词并选择正式策略');return}try{for(const id of ids)await api('/api/v1/keywords/candidates/'+id+'/include',{method:'POST',body:JSON.stringify({strategy_id:strategy})});toast('已将审核通过的候选词纳入策略');await loadKeywords()}catch(e){toast(e.message)}};
+$('saveKeywordThresholds').onclick=async()=>{try{await api('/api/v1/keywords/quality-thresholds?project_id='+encodeURIComponent($('keywordProject').value),{method:'PUT',body:JSON.stringify({min_hits:+$('thresholdHits').value,min_valid_demands:+$('thresholdValid').value,max_duplicate_rate:+$('thresholdDuplicate').value,max_irrelevant_rate:+$('thresholdIrrelevant').value})});toast('质量阈值已保存')}catch(e){toast(e.message)}};
+\nasync function init(){try{await Promise.all([loadPlatforms(),loadProjects()]);await loadOverview();if(state.page==='discovery')await loadDiscovery()}catch(e){toast(e.message)}}init();
 </script></body></html>
