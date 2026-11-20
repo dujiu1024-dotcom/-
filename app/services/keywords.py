@@ -139,3 +139,286 @@ def generate_candidates(project_id: str = "default", limit: int = 300) -> dict:
                     evidence_added += max(evidence.rowcount, 0)
     return {"project_id": project_id, "sources_seen": len(sources), "created": created,
             "duplicates": duplicates, "evidence_added": evidence_added, "generation_method": method}
+
+
+def list_candidates(project_id: str = "default", status: str | None = None,
+                    limit: int = 100, offset: int = 0) -> dict:
+    clauses, params = ["c.project_id=?"], [project_id]
+    if status:
+        clauses.append("c.status=?")
+        params.append(status)
+    where = " AND ".join(clauses)
+    with connect() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM keyword_candidates c WHERE {where}", params).fetchone()[0]
+        rows = conn.execute(
+            f"""SELECT c.*,(SELECT COUNT(*) FROM keyword_candidate_evidence e WHERE e.candidate_id=c.id) AS evidence_count
+                FROM keyword_candidates c WHERE {where}
+                ORDER BY c.created_at DESC LIMIT ? OFFSET ?""",
+            [*params, max(1, min(limit, 200)), max(0, offset)]).fetchall()
+    return {"total": total, "items": [dict(row) for row in rows], "limit": limit, "offset": offset}
+
+
+def get_candidate(candidate_id: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM keyword_candidates WHERE id=?", (candidate_id,)).fetchone()
+        if not row:
+            return None
+        evidence = conn.execute(
+            "SELECT * FROM keyword_candidate_evidence WHERE candidate_id=? ORDER BY created_at",
+            (candidate_id,)).fetchall()
+        reviews = conn.execute(
+            "SELECT * FROM keyword_reviews WHERE candidate_id=? ORDER BY created_at DESC",
+            (candidate_id,)).fetchall()
+    item = dict(row)
+    item["suggested_platforms"] = json.loads(item.pop("suggested_platforms_json", "[]") or "[]")
+    item["negative_terms"] = json.loads(item.pop("negative_terms_json", "[]") or "[]")
+    item["evidence"] = [dict(value) for value in evidence]
+    item["reviews"] = [dict(value) for value in reviews]
+    return item
+
+
+def review_candidate(candidate_id: int, action: str, note: str = "",
+                    reviewer: str = "local-user", target_candidate_id: int | None = None) -> dict | None:
+    allowed = {"approve": "approved", "reject": "rejected", "defer": "deferred",
+               "disable": "disabled", "reactivate": "pending"}
+    if action not in {*allowed, "merge"}:
+        raise ValueError("不支持的审核动作")
+    now = datetime.now(UTC).isoformat()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM keyword_candidates WHERE id=?", (candidate_id,)).fetchone()
+        if not row:
+            return None
+        if action == "merge":
+            target = conn.execute("SELECT * FROM keyword_candidates WHERE id=?",
+                                  (target_candidate_id,)).fetchone()
+            if not target or target["id"] == candidate_id or target["project_id"] != row["project_id"]:
+                raise ValueError("合并目标不存在或不属于同一项目")
+            if target["status"] in {"rejected", "disabled", "merged"}:
+                raise ValueError("合并目标状态不可用")
+            status = "merged"
+            evidence = conn.execute(
+                "SELECT * FROM keyword_candidate_evidence WHERE candidate_id=?", (candidate_id,)).fetchall()
+            for item in evidence:
+                conn.execute("""INSERT OR IGNORE INTO keyword_candidate_evidence
+                    (candidate_id,source_ref,source_type,source_platform,source_comment_id,
+                     source_content_id,source_content_url,evidence_quote,demand_cluster_id,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (target_candidate_id, item["source_ref"], item["source_type"], item["source_platform"],
+                     item["source_comment_id"], item["source_content_id"], item["source_content_url"],
+                     item["evidence_quote"], item["demand_cluster_id"], item["created_at"]))
+        else:
+            status = allowed[action]
+        conn.execute("UPDATE keyword_candidates SET status=?,merged_into_id=?,updated_at=? WHERE id=?",
+                     (status, target_candidate_id if action == "merge" else None, now, candidate_id))
+        conn.execute("""INSERT INTO keyword_reviews
+            (candidate_id,action,reviewer,note,target_candidate_id,created_at) VALUES(?,?,?,?,?,?)""",
+            (candidate_id, action, reviewer[:100], note[:1000], target_candidate_id, now))
+        if action == "reject":
+            try:
+                saved = conn.execute("SELECT value FROM app_settings WHERE key='keyword_blacklist'").fetchone()
+                blacklist = json.loads(saved["value"] if saved else "[]")
+            except (TypeError, ValueError):
+                blacklist = []
+            blacklist = sorted(set(blacklist) | {row["normalized_keyword"]})
+            conn.execute("""INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at""",
+                ("keyword_blacklist", json.dumps(blacklist, ensure_ascii=False), now))
+        result = conn.execute("SELECT * FROM keyword_candidates WHERE id=?", (candidate_id,)).fetchone()
+    return dict(result)
+
+
+def include_candidate(candidate_id: int, strategy_id: str, reviewer: str = "local-user") -> dict:
+    now = datetime.now(UTC).isoformat()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        candidate = conn.execute("SELECT * FROM keyword_candidates WHERE id=?", (candidate_id,)).fetchone()
+        strategy = conn.execute("SELECT * FROM search_strategies WHERE id=?", (strategy_id,)).fetchone()
+        if not candidate or not strategy:
+            raise ValueError("候选词或搜索策略不存在")
+        if candidate["status"] != "approved":
+            raise ValueError("只有审核通过的候选词才能纳入正式策略")
+        if candidate["project_id"] != strategy["project_id"]:
+            raise ValueError("候选词与搜索策略不属于同一项目")
+        terms = json.loads(strategy["terms_json"])
+        if candidate["keyword"] not in terms:
+            terms.append(candidate["keyword"])
+            conn.execute("UPDATE search_strategies SET terms_json=?,updated_at=? WHERE id=?",
+                         (json.dumps(terms, ensure_ascii=False), now, strategy_id))
+        conn.execute("UPDATE keyword_candidates SET status='included',updated_at=? WHERE id=?",
+                     (now, candidate_id))
+        conn.execute("""INSERT INTO keyword_reviews
+            (candidate_id,action,reviewer,note,created_at) VALUES(?,?,?,?,?)""",
+            (candidate_id, "include", reviewer[:100], f"纳入策略 {strategy_id}", now))
+    return {"candidate_id": candidate_id, "strategy_id": strategy_id, "keyword": candidate["keyword"],
+            "included": True, "terms": terms}
+
+
+def start_verification_batch(project_id: str, platform: str, candidate_ids: list[int],
+                             requested_limit: int = 20) -> dict:
+    from app.services.crawler_engine import SUPPORTED
+    from app.services.discovery import create_discovery_run, create_strategy, execute_discovery_batch
+
+    if platform not in SUPPORTED:
+        raise ValueError("该平台暂不支持真实关键词试搜")
+    ids = list(dict.fromkeys(candidate_ids))[:100]
+    if not ids:
+        raise ValueError("至少选择一个候选词")
+    with connect() as conn:
+        marks = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT * FROM keyword_candidates WHERE project_id=? AND id IN ({marks})",
+            [project_id, *ids]).fetchall()
+    if len(rows) != len(ids):
+        raise ValueError("候选词不存在或不属于当前项目")
+    strategy = create_strategy(project_id, {"name": f"候选词验证-{datetime.now(UTC).strftime('%H%M%S')}",
+        "topic": "AI 搜索词质量验证", "terms": [row["keyword"] for row in rows],
+        "platforms": [platform], "enabled": True})
+    if not strategy:
+        raise ValueError("研究项目不存在；请使用采集库中的项目 ID")
+    run = create_discovery_run(strategy["id"])
+    now = datetime.now(UTC).isoformat()
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO keyword_verification_batches(project_id,platform,status,requested_limit,created_at) VALUES(?,?, 'queued', ?, ?)",
+            (project_id, platform, max(1, min(requested_limit, 100)), now))
+        batch_id = cur.lastrowid
+        conn.execute("CREATE TABLE IF NOT EXISTS keyword_verification_run_links (batch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL)")
+        conn.execute("INSERT INTO keyword_verification_run_links(batch_id,run_id) VALUES(?,?)",
+                     (batch_id, run["id"]))
+        conn.execute("""CREATE TABLE IF NOT EXISTS keyword_verification_batch_candidates (
+            batch_id INTEGER NOT NULL, candidate_id INTEGER NOT NULL, PRIMARY KEY(batch_id,candidate_id))""")
+        conn.executemany("INSERT INTO keyword_verification_batch_candidates(batch_id,candidate_id) VALUES(?,?)",
+                         [(batch_id, row["id"]) for row in rows])
+    try:
+        execute_discovery_batch(run["id"], [platform], max_tasks=100, max_posts=requested_limit)
+    except (ValueError, RuntimeError) as exc:
+        with connect() as conn:
+            conn.execute("UPDATE keyword_verification_batches SET status='failed',finished_at=?,error=? WHERE id=?",
+                         (datetime.now(UTC).isoformat(), str(exc)[:1000], batch_id))
+        raise
+    return {"batch_id": batch_id, "run_id": run["id"], "project_id": project_id,
+            "platform": platform, "status": "queued", "candidate_count": len(rows),
+            "requested_limit": requested_limit}
+
+
+def refresh_verification_batch(batch_id: int) -> dict | None:
+    from app.services.discovery import refresh_discovery_run
+    from app.services.crawler_engine import SUPPORTED
+
+    with connect() as conn:
+        batch = conn.execute("SELECT * FROM keyword_verification_batches WHERE id=?", (batch_id,)).fetchone()
+        if not batch:
+            return None
+        link = conn.execute("SELECT run_id FROM keyword_verification_run_links WHERE batch_id=?",
+                            (batch_id,)).fetchone()
+    if not link:
+        return dict(batch)
+    run = refresh_discovery_run(link["run_id"])
+    status = run.get("status", "failed")
+    if status in {"succeeded", "partial", "failed", "paused"}:
+        now = datetime.now(UTC).isoformat()
+        if status in {"succeeded", "partial"}:
+            with connect() as conn:
+                candidates = conn.execute(
+                    """SELECT c.* FROM keyword_candidates c
+                       JOIN keyword_verification_batch_candidates b ON b.candidate_id=c.id
+                       WHERE b.batch_id=?""", (batch_id,)).fetchall()
+                discovered = conn.execute("SELECT * FROM discovered_contents WHERE run_id=?",
+                                           (link["run_id"],)).fetchall()
+                for candidate in candidates:
+                    hits = [dict(item) for item in discovered
+                            if normalize_keyword(item["query_term"]) == candidate["normalized_keyword"]]
+                    valid = [item for item in hits if classify((item.get("title", "") + " " + item.get("body", "")).strip())]
+                    title_keys = [normalize_keyword(item.get("title", "")) for item in hits]
+                    duplicate_rate = (len(title_keys) - len(set(title_keys))) / len(title_keys) if title_keys else 0.0
+                    irrelevant_rate = (len(hits) - len(valid)) / len(hits) if hits else 1.0
+                    authors = {item.get("author_url") or item.get("author_name") for item in hits
+                               if item.get("author_url") or item.get("author_name")}
+                    ages = []
+                    for item in hits:
+                        value = item.get("published_at")
+                        if value:
+                            try:
+                                published = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                                if published.tzinfo is None:
+                                    published = published.replace(tzinfo=UTC)
+                                ages.append(max(0.0, (datetime.now(UTC) - published.astimezone(UTC)).total_seconds() / 3600))
+                            except (ValueError, TypeError):
+                                pass
+                    conn.execute(
+                        """INSERT OR REPLACE INTO keyword_verification_results
+                        (batch_id,candidate_id,hit_count,valid_demand_count,duplicate_rate,
+                         irrelevant_rate,unique_author_count,demand_rate,platform_coverage,
+                         freshness_hours,failure_reason,evidence_json,created_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (batch_id, candidate["id"], len(hits), len(valid), round(duplicate_rate, 4),
+                         round(irrelevant_rate, 4), len(authors), round(len(valid) / len(hits), 4) if hits else 0.0,
+                         1.0 if hits else 0.0, round(sum(ages) / len(ages), 2) if ages else None,
+                         "未命中" if not hits else None,
+                         json.dumps([{"title": x["title"], "url": x["content_url"],
+                                      "body": x["body"][:500]} for x in hits[:20]], ensure_ascii=False), now))
+                for candidate in candidates:
+                    coverage = conn.execute(
+                        """SELECT COUNT(DISTINCT b.platform) FROM keyword_verification_results r
+                           JOIN keyword_verification_batches b ON b.id=r.batch_id
+                           WHERE r.candidate_id=? AND r.hit_count>0""", (candidate["id"],)).fetchone()[0]
+                    conn.execute("UPDATE keyword_verification_results SET platform_coverage=? WHERE batch_id=? AND candidate_id=?",
+                                 (coverage / max(1, len(SUPPORTED)), batch_id, candidate["id"]))
+            final_status = "succeeded"
+        else:
+            final_status = "failed"
+        with connect() as conn:
+            conn.execute("UPDATE keyword_verification_batches SET status=?,finished_at=?,error=? WHERE id=?",
+                         (final_status, now, run.get("notes") if final_status == "failed" else None, batch_id))
+    with connect() as conn:
+        results = conn.execute(
+            """SELECT r.*,c.keyword,c.category FROM keyword_verification_results r
+               JOIN keyword_candidates c ON c.id=r.candidate_id WHERE r.batch_id=? ORDER BY c.keyword""",
+            (batch_id,)).fetchall()
+        latest = conn.execute("SELECT * FROM keyword_verification_batches WHERE id=?", (batch_id,)).fetchone()
+    return {**dict(latest), "run": run, "results": [dict(r) for r in results]}
+
+
+def update_quality_thresholds(project_id: str, values: dict) -> dict:
+    now = datetime.now(UTC).isoformat()
+    defaults = {"min_hits": 3, "min_valid_demands": 1,
+                "max_duplicate_rate": 0.7, "max_irrelevant_rate": 0.6}
+    defaults.update(values)
+    if not 0 <= defaults["max_duplicate_rate"] <= 1 or not 0 <= defaults["max_irrelevant_rate"] <= 1:
+        raise ValueError("重复率和无关率阈值必须在 0 到 1 之间")
+    with connect() as conn:
+        conn.execute("""INSERT INTO keyword_quality_thresholds
+            (project_id,min_hits,min_valid_demands,max_duplicate_rate,max_irrelevant_rate,updated_at)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+            min_hits=excluded.min_hits,min_valid_demands=excluded.min_valid_demands,
+            max_duplicate_rate=excluded.max_duplicate_rate,max_irrelevant_rate=excluded.max_irrelevant_rate,
+            updated_at=excluded.updated_at""",
+            (project_id, defaults["min_hits"], defaults["min_valid_demands"],
+             defaults["max_duplicate_rate"], defaults["max_irrelevant_rate"], now))
+    return {"project_id": project_id, **defaults, "updated_at": now}
+
+
+def get_quality_thresholds(project_id: str) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM keyword_quality_thresholds WHERE project_id=?",
+                           (project_id,)).fetchone()
+    return dict(row) if row else {"project_id": project_id, "min_hits": 3,
+        "min_valid_demands": 1, "max_duplicate_rate": 0.7, "max_irrelevant_rate": 0.6}
+
+
+def get_verification_batch(batch_id: int) -> dict | None:
+    result = refresh_verification_batch(batch_id)
+    if not result:
+        return None
+    thresholds = get_quality_thresholds(result["project_id"])
+    for item in result.get("results", []):
+        item["quality_pass"] = (
+            item["hit_count"] >= thresholds["min_hits"]
+            and item["valid_demand_count"] >= thresholds["min_valid_demands"]
+            and (item["duplicate_rate"] or 0) <= thresholds["max_duplicate_rate"]
+            and (item["irrelevant_rate"] if item["irrelevant_rate"] is not None else 1)
+                <= thresholds["max_irrelevant_rate"]
+        )
+    result["thresholds"] = thresholds
+    return result
