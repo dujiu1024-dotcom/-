@@ -72,8 +72,7 @@ def list_comments(since_hours: int | None = None, platform: str | None = None,
     if platform:
         clauses.append("platform = ?")
         params.append(platform)
-    if since_hours is not None:
-        # Filter in Python after parsing offsets; do not compare mixed timezone strings lexically.
+    # Filter in Python after parsing offsets; do not compare mixed timezone strings lexically.
     sql = "SELECT * FROM comments"
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
