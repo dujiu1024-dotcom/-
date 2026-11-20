@@ -39,7 +39,9 @@ def _sources(project_id: str, limit: int) -> list[dict]:
         if category:
             output.append({"source_ref": ref, "platform": row["platform"], "comment_id": row["comment_id"],
                 "content_id": row.get("content_id"), "content_url": row.get("content_url"),
-                "text": row["comment_text"], "title": row.get("content_title"), "author_key": row.get("author_key"),\n                "published_at": row.get("comment_created_at"), "demand_cluster_id": analysis.get("cluster_id") if analysis else None,\n                "confidence": analysis.get("confidence") if analysis else 0.45, "category": category})
+                "text": row["comment_text"], "title": row.get("content_title"), "author_key": row.get("author_key"),
+                "published_at": row.get("comment_created_at"), "demand_cluster_id": analysis.get("cluster_id") if analysis else None,
+                "confidence": analysis.get("confidence") if analysis else 0.45, "category": category})
     return output
 
 
@@ -54,7 +56,8 @@ def _rule_candidates(source: dict) -> list[dict]:
     if 2 <= len(value) <= 32 and value not in {"哈哈哈", "支持", "路过", "顶"}:
         return [{"keyword": value, "category": "问题表达",
                  "reason": "从已采集需求表达中去除疑问套语，保留核心短语",
-                 "original_expression": source["text"], "confidence": 0.45,\n                 "suggested_platforms": [], "negative_terms": []}]
+                 "original_expression": source["text"], "confidence": 0.45,
+                 "suggested_platforms": [], "negative_terms": []}]
     return []
 
 
