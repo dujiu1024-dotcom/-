@@ -103,6 +103,23 @@ def connect() -> sqlite3.Connection:
             provider TEXT NOT NULL, status TEXT NOT NULL, error TEXT
         )
     """)
+    # Expression indexes match julianday() predicates and preserve legacy timestamp compatibility.
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_comments_platform_created_jd
+        ON comments(platform, julianday(comment_created_at))
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_comments_created_jd
+        ON comments(julianday(comment_created_at))
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_comments_imported_order
+        ON comments(imported_at DESC, platform ASC, comment_id ASC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_demand_analyses_cluster_analyzed
+        ON demand_analyses(cluster_id, analyzed_at)
+    """)
     conn.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('recent_hours',?,?)",
                  (str(DEFAULT_RECENT_HOURS), datetime.now(UTC).isoformat()))
     conn.commit()
@@ -186,18 +203,37 @@ def page_comments(
         return [dict(row) for row in conn.execute(sql, [*params, limit, offset]).fetchall()]
 
 
+def explain_comment_query_plan(
+    filters: CommentFilters | Mapping[str, object] | None = None,
+) -> list[str]:
+    """Return SQLite's plan details for the production comment iteration query."""
+    where, params = _comment_where(filters)
+    sql = (
+        "EXPLAIN QUERY PLAN SELECT * FROM comments" + where
+        + " ORDER BY imported_at DESC, platform ASC, comment_id ASC"
+    )
+    with connect() as conn:
+        return [row["detail"] for row in conn.execute(sql, params).fetchall()]
+
+
 def iter_comments(
     filters: CommentFilters | Mapping[str, object] | None = None,
     batch_size: int = 250,
+    limit: int | None = None,
 ) -> Iterator[dict]:
-    """Stream matching comments in bounded batches without materializing the full result set."""
+    """Stream a bounded SQL result in fetchmany() batches."""
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be at least 1 when provided")
     where, params = _comment_where(filters)
     sql = (
         "SELECT * FROM comments" + where
         + " ORDER BY imported_at DESC, platform ASC, comment_id ASC"
     )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
     conn = connect()
     try:
         cursor = conn.execute(sql, params)
