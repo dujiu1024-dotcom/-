@@ -255,3 +255,31 @@ def test_llm_candidate_metadata_is_persisted(tmp_path, monkeypatch):
     detail = keywords.get_candidate(item["id"])
     assert detail["suggested_platforms"] == ["bilibili", "zhihu"]
     assert detail["negative_terms"] == ["Excel教程"]
+
+
+def test_merge_candidate_moves_all_source_evidence_to_target(tmp_path, monkeypatch):
+    from app.storage import db
+    from app.services.keywords import review_candidate, get_candidate
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "merge-evidence.sqlite3")
+    now = datetime.now(UTC).isoformat()
+    with db.connect() as conn:
+        conn.execute("""INSERT INTO keyword_candidates
+            (project_id,keyword,normalized_keyword,category,source_type,source_text,
+             generation_reason,status,created_at,updated_at)
+            VALUES('p','批处理工具','批处理工具','场景表达','comment','证据A','理由','pending',?,?)""",
+            (now, now))
+        source_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("""INSERT INTO keyword_candidates
+            (project_id,keyword,normalized_keyword,category,source_type,source_text,
+             generation_reason,status,created_at,updated_at)
+            VALUES('p','批量处理工具','批量处理工具','场景表达','comment','证据B','理由','pending',?,?)""",
+            (now, now))
+        target_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for cid, ref, quote in ((source_id, "source-a", "证据A"), (target_id, "source-b", "证据B")):
+            conn.execute("""INSERT INTO keyword_candidate_evidence
+                (candidate_id,source_ref,source_type,evidence_quote,created_at)
+                VALUES(?,?,'comment',?,?)""", (cid, ref, quote, now))
+    merged = review_candidate(source_id, "merge", target_candidate_id=target_id)
+    assert merged["status"] == "merged"
+    target = get_candidate(target_id)
+    assert {row["source_ref"] for row in target["evidence"]} == {"source-a", "source-b"}
