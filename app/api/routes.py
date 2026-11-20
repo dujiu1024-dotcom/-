@@ -7,7 +7,7 @@ from app.collectors.reverse_cli import collect as collect_external, install_reve
 from app.config import IMPORT_ROOT
 from app.models import ImportRequest
 from app.services.analysis import get_clusters, get_trends, run_analysis
-from app.services.collection_library import (create_project, create_source, delete_project, delete_source, get_project, get_source, list_projects, update_project, update_source)
+from app.services.collection_library import (create_project, create_source, delete_project, delete_source, get_source, list_projects, update_project, update_source)
 from app.services.crawler_engine import (
     engine_status, get_job, import_latest_exports, install_engine, read_job_log,
     session_status, start_job, stop_job, list_jobs,
