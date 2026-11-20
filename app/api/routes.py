@@ -255,11 +255,15 @@ def set_time_window(payload: TimeWindowRequest):
 
 @router.get("/comments")
 def comments(since_hours: int | None = Query(None, ge=1, le=8760),
-             platform: str | None = None, include_unknown_time: bool = False):
+             platform: str | None = None, include_unknown_time: bool = False,
+             limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
     hours = since_hours or get_recent_hours()
     rows = list_comments(since_hours=hours, platform=platform,
                          include_unknown_time=include_unknown_time)
-    return {"count": len(rows), "since_hours": hours, "items": rows}
+    total = len(rows)
+    return {"count": min(limit, max(0, total - offset)), "total": total,
+            "limit": limit, "offset": offset, "since_hours": hours,
+            "items": rows[offset:offset + limit]}
 
 
 @router.post("/analysis/run")
