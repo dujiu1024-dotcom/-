@@ -33,7 +33,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 1. 在工作台选平台、采集方式和关键词，启动任务。
 2. MediaCrawler 打开可见浏览器；首次登录按平台要求扫码或人工验证。
-3. MediaCrawler 使用 `SAVE_LOGIN_STATE` 与 `USER_DATA_DIR` 按平台代码持久化浏览器资料；例如小红书与抖音使用不同的 profile 目录。
+3. 安装器会关闭 MediaCrawler 的 CDP 共享浏览器模式，并确保 `SAVE_LOGIN_STATE=True`。上游使用 `USER_DATA_DIR` 按平台代码持久化浏览器资料；例如小红书与抖音使用不同的 profile 目录。
 4. 后续该平台任务复用自己的会话。失效时在可见浏览器中重新授权。
 5. 采集结束后点击“导入采集结果并刷新”，查看评论和需求候选。
 
