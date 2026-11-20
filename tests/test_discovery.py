@@ -285,3 +285,46 @@ def test_discovery_worker_lease_is_exclusive_and_expires(tmp_path, monkeypatch):
         )
     assert discovery._claim_worker_lease("worker-b", lease_seconds=60) is True
     assert discovery._renew_worker_lease("worker-a", lease_seconds=60) is False
+
+
+
+def test_discovery_worker_lease_loss_keeps_started_job_recoverable(tmp_path, monkeypatch):
+    import json
+    import pytest
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-lease-loss.sqlite3")
+    jobs = {"id": "lease-lost-job", "pid": 9876}
+    monkeypatch.setattr(discovery, "start_job", lambda payload: jobs)
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "租约丢失"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "租约丢失策略", "topic": "测试", "terms": ["关键词"],
+        "platforms": ["bilibili"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+    queued = client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={}).json()
+    assert queued["status"] == "queued"
+    with db.connect() as conn:
+        execution = json.loads(conn.execute(
+            "SELECT execution_json FROM discovery_runs WHERE id=?", (run["id"],)
+        ).fetchone()[0])
+    monkeypatch.setattr(discovery, "_renew_worker_lease", lambda owner_id: False)
+
+    with pytest.raises(RuntimeError, match="租约失效"):
+        discovery._start_batch_task(run["id"], execution, lease_owner="stale-worker")
+
+    with db.connect() as conn:
+        run_row = conn.execute(
+            "SELECT status,execution_json FROM discovery_runs WHERE id=?", (run["id"],)
+        ).fetchone()
+        task = conn.execute(
+            "SELECT status,job_id,pid FROM discovery_run_tasks WHERE run_id=? AND task_index=0",
+            (run["id"],)
+        ).fetchone()
+    assert run_row["status"] == "paused"
+    assert json.loads(run_row["execution_json"])["job_id"] == "lease-lost-job"
+    assert task["status"] == "interrupted"
+    assert task["job_id"] == "lease-lost-job"
+    assert task["pid"] == 9876
