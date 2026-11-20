@@ -87,12 +87,20 @@ def _build_command(payload: dict[str, Any]) -> tuple[str, list[str]]:
     mode = payload.get("mode", "search")
     if mode not in MODES:
         raise ValueError("mode 仅支持 search、detail、creator")
+    export_root = (DATA_ROOT / "exports").resolve()
+    requested_export = payload.get("export_dir")
+    if requested_export:
+        export_dir = Path(requested_export).resolve()
+        if export_root not in export_dir.parents:
+            raise ValueError("导出目录必须位于数据目录 exports 下")
+    else:
+        export_dir = export_root / platform
     args = [sys.executable, "main.py", "--platform", SUPPORTED[platform], "--lt", "qrcode", "--type", mode,
             "--get_comment", "true", "--get_sub_comment", str(bool(payload.get("include_replies", True))).lower(),
             "--get_media", "false", "--headless", "false", "--save_data_option", "jsonl",
             "--crawler_max_notes_count", str(max(1, min(int(payload.get("max_posts", 20)), 100))),
             "--max_comments_count_singlenotes", str(max(1, min(int(payload.get("max_comments_per_post", 100)), 1000))),
-            "--max_concurrency_num", "1", "--save_data_path", str((DATA_ROOT / "exports" / platform).resolve())]
+            "--max_concurrency_num", "1", "--save_data_path", str(export_dir)]
     field = {"search": "keywords", "detail": "target_ids", "creator": "creator_ids"}[mode]
     value = str(payload.get(field, "")).strip()
     if not value:
@@ -111,7 +119,7 @@ def start_job(payload: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError(f"已有采集任务运行中：{running[0]['id']}；当前版本一次运行一个任务")
         job_id = uuid.uuid4().hex[:12]
         log_dir = DATA_ROOT / "logs"
-        export_dir = DATA_ROOT / "exports" / platform
+        export_dir = Path(next((command[i + 1] for i, arg in enumerate(command[:-1]) if arg == "--save_data_path"), DATA_ROOT / "exports" / platform))
         log_dir.mkdir(parents=True, exist_ok=True)
         export_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{job_id}.log"
