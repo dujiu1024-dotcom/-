@@ -12,7 +12,7 @@ from app.services.crawler_engine import (
     engine_status, get_job, import_latest_exports, install_engine, read_job_log,
     session_status, start_job, stop_job, list_jobs,
 )
-from app.services.demand import demand_candidates\nfrom app.services.keywords import generate_candidates, list_candidates, get_candidate, review_candidate, include_candidate
+from app.services.demand import demand_candidates\nfrom app.services.keywords import (generate_candidates, list_candidates, get_candidate, review_candidate, include_candidate, start_verification_batch, get_verification_batch, get_quality_thresholds, update_quality_thresholds)
 from app.services.settings import get_settings, update_recent_hours
 from app.storage.db import get_recent_hours, list_comments, upsert_comment
 
@@ -339,3 +339,47 @@ def keyword_candidate_include(candidate_id: int, payload: KeywordIncludeRequest)
         return include_candidate(candidate_id, payload.strategy_id, payload.reviewer)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+class KeywordVerificationRequest(BaseModel):
+    project_id: str = Field(min_length=1, max_length=100)
+    platform: str = Field(min_length=1, max_length=40)
+    candidate_ids: list[int] = Field(min_length=1, max_length=100)
+    requested_limit: int = Field(default=20, ge=1, le=100)
+
+
+class KeywordThresholdRequest(BaseModel):
+    min_hits: int = Field(default=3, ge=0, le=10000)
+    min_valid_demands: int = Field(default=1, ge=0, le=10000)
+    max_duplicate_rate: float = Field(default=0.7, ge=0, le=1)
+    max_irrelevant_rate: float = Field(default=0.6, ge=0, le=1)
+
+
+@router.post("/keywords/verification-batches")
+def keyword_verification_create(payload: KeywordVerificationRequest):
+    try:
+        return start_verification_batch(payload.project_id, payload.platform,
+                                        payload.candidate_ids, payload.requested_limit)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/keywords/verification-batches/{batch_id}")
+def keyword_verification_status(batch_id: int):
+    result = get_verification_batch(batch_id)
+    if not result:
+        raise HTTPException(404, "验证批次不存在")
+    return result
+
+
+@router.get("/keywords/quality-thresholds")
+def keyword_quality_thresholds(project_id: str = "default"):
+    return get_quality_thresholds(project_id)
+
+
+@router.put("/keywords/quality-thresholds")
+def keyword_quality_thresholds_update(project_id: str, payload: KeywordThresholdRequest):
+    try:
+        return update_quality_thresholds(project_id, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
