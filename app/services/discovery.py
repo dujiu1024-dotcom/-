@@ -1,11 +1,10 @@
 import json
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
+from app.collectors.mediacrawler_import import read_export
 from app.config import DATA_ROOT
 from app.services.crawler_engine import SUPPORTED, get_job, start_job
-from app.collectors.mediacrawler_import import read_export
 from app.storage.db import connect
 
 
@@ -164,6 +163,8 @@ def approve_discovered_source(content_id):
 
 
 def _content_from_row(row, platform, query_term):
+    if any(key in row for key in ("comment_id", "comment_text", "root_comment_id", "评论内容")):
+        return None
     title = next((row.get(k) for k in ("title", "note_title", "desc", "description", "视频标题", "标题", "name") if row.get(k)), "")
     body = next((row.get(k) for k in ("content", "text", "note_desc", "description", "desc", "正文") if row.get(k)), "")
     url = next((row.get(k) for k in ("content_url", "url", "share_url", "链接") if row.get(k)), "")
