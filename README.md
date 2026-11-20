@@ -70,8 +70,10 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `GET /api/v1/analytics/trends?since_hours=720&bucket=day`
 - `GET /api/v1/discovery/strategies?project_id=...` / `POST /api/v1/discovery/projects/{project_id}/strategies`
 - `POST /api/v1/discovery/strategies/{strategy_id}/runs`：生成发现批次及查询词清单
-- `POST /api/v1/discovery/runs/{run_id}/execute?platform=bilibili&query_index=0`：启动单个平台、单个搜索词任务\n- `POST /api/v1/discovery/runs/{run_id}/execute-batch`：按策略配置的平台与搜索词生成串行任务队列，单批最多 100 个子任务；前端每 3 秒轮询状态并推进下一项，避免同时启动多个 MediaCrawler 进程
-- `GET /api/v1/discovery/runs/{run_id}`：刷新任务状态；平台任务结束后尝试从新生成的内容导出文件中归一化发现结果
+- `POST /api/v1/discovery/runs/{run_id}/execute?platform=bilibili&query_index=0`：启动单个平台、单个搜索词任务\n- `POST /api/v1/discovery/runs/{run_id}/execute-batch`：按策略配置的平台与搜索词生成持久化串行任务队列，单批最多 100 个子任务；后台工作线程自动推进，前端轮询仅用于展示进度
+- `GET /api/v1/discovery/runs/{run_id}`：查询批次状态
+- `GET /api/v1/discovery/runs/{run_id}/tasks`：查询持久化子任务状态、执行记录和结果数
+- `POST /api/v1/discovery/runs/{run_id}/resume`：服务重启导致批次暂停后，在确认旧采集进程已退出的前提下，恢复当前子任务
 - `GET /api/v1/discovery/results` / `POST /api/v1/discovery/runs/{run_id}/results`
 - `POST /api/v1/discovery/results/{content_id}/approve`：审核作者并沉淀为采集库来源
 - `GET /api/v1/collectors/reverse/status` / `POST /api/v1/collectors/reverse/install`
