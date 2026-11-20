@@ -17,5 +17,5 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest -q
       - run: ruff check .
-      - name: Lightweight 10k performance regression gate
-        run: python -m benchmarks.benchmark_comments --ci --repetitions 3
+      - name: 10k / 100k / 500k performance regression gate
+        run: python -m benchmarks.benchmark_comments --sizes 10000 100000 500000 --repetitions 3
