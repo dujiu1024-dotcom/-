@@ -65,7 +65,47 @@ def connect() -> sqlite3.Connection:
             provider TEXT NOT NULL, status TEXT NOT NULL, error TEXT
         )
     """)
-    conn.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('recent_hours',?,?)",
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS keyword_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL DEFAULT 'default',
+            keyword TEXT NOT NULL, normalized_keyword TEXT NOT NULL, category TEXT NOT NULL DEFAULT '场景表达',
+            source_type TEXT NOT NULL, source_platform TEXT, source_comment_id TEXT, source_content_id TEXT,
+            source_content_url TEXT, source_text TEXT NOT NULL, generation_reason TEXT NOT NULL,
+            generation_method TEXT NOT NULL DEFAULT 'rule',
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','merged','deferred','disabled','included')),
+            merged_into_id INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(project_id, normalized_keyword), FOREIGN KEY(merged_into_id) REFERENCES keyword_candidates(id)
+        );
+        CREATE TABLE IF NOT EXISTS keyword_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('approve','reject','merge','defer','disable','include','reactivate')),
+            reviewer TEXT NOT NULL DEFAULT 'local-user', note TEXT, target_candidate_id INTEGER,
+            created_at TEXT NOT NULL, FOREIGN KEY(candidate_id) REFERENCES keyword_candidates(id),
+            FOREIGN KEY(target_candidate_id) REFERENCES keyword_candidates(id)
+        );
+        CREATE TABLE IF NOT EXISTS keyword_verification_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL DEFAULT 'default',
+            platform TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','succeeded','failed','cancelled')),
+            requested_limit INTEGER NOT NULL DEFAULT 20, started_at TEXT, finished_at TEXT, error TEXT, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS keyword_verification_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL, candidate_id INTEGER NOT NULL,
+            hit_count INTEGER NOT NULL DEFAULT 0, valid_demand_count INTEGER NOT NULL DEFAULT 0,
+            duplicate_rate REAL, irrelevant_rate REAL, failure_reason TEXT, evidence_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL, UNIQUE(batch_id,candidate_id),
+            FOREIGN KEY(batch_id) REFERENCES keyword_verification_batches(id),
+            FOREIGN KEY(candidate_id) REFERENCES keyword_candidates(id)
+        );
+        CREATE TABLE IF NOT EXISTS keyword_quality_thresholds (
+            project_id TEXT PRIMARY KEY, min_hits INTEGER NOT NULL DEFAULT 3,
+            min_valid_demands INTEGER NOT NULL DEFAULT 1, max_duplicate_rate REAL NOT NULL DEFAULT 0.7,
+            max_irrelevant_rate REAL NOT NULL DEFAULT 0.6, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_keyword_candidates_status ON keyword_candidates(status,created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_keyword_candidates_project ON keyword_candidates(project_id,status);
+        CREATE INDEX IF NOT EXISTS idx_keyword_verification_batch ON keyword_verification_results(batch_id);
+    """)
+\n    conn.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('recent_hours',?,?)",
                  (str(DEFAULT_RECENT_HOURS), datetime.now(UTC).isoformat()))
     conn.commit()
     return conn
