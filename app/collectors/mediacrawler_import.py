@@ -1,7 +1,7 @@
 import csv
 import json
 import re
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dateutil import parser as date_parser
