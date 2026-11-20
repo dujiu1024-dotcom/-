@@ -105,6 +105,32 @@ def connect() -> sqlite3.Connection:
     """)
 
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS analysis_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_run_id INTEGER NOT NULL,
+            platform TEXT NOT NULL,
+            comment_id TEXT NOT NULL,
+            is_demand INTEGER NOT NULL CHECK(is_demand IN (0,1)),
+            category TEXT NOT NULL,
+            model_version TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            analyzed_at TEXT NOT NULL,
+            UNIQUE(analysis_run_id, platform, comment_id)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_analysis_predictions_version_item
+        ON analysis_predictions(model_version, prompt_version, platform, comment_id, analyzed_at DESC)
+    """)
+    analysis_run_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(analysis_runs)").fetchall()
+    }
+    if "model_version" not in analysis_run_columns:
+        conn.execute("ALTER TABLE analysis_runs ADD COLUMN model_version TEXT")
+    if "prompt_version" not in analysis_run_columns:
+        conn.execute("ALTER TABLE analysis_runs ADD COLUMN prompt_version TEXT")
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS demand_feedback (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             target_type TEXT NOT NULL CHECK(target_type IN ('comment','content','demand_cluster')),
