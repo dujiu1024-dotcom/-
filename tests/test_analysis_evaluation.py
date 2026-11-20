@@ -83,7 +83,7 @@ def test_analysis_run_records_positive_and_negative_predictions(tmp_path, monkey
     monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "analysis-predictions.sqlite3")
     db.upsert_comment(_comment("positive"))
     db.upsert_comment(_comment("negative"))
-    import app.services.analysis as analysis
+    from app.services import analysis
     monkeypatch.setattr(analysis, "provider_status", lambda: {
         "configured": False, "model": None, "embedding_model": None,
         "semantic_mode": "local_fallback",
