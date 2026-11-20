@@ -306,8 +306,8 @@ def execute_discovery_batch(run_id, platforms=None, max_tasks=100):
         if not row:
             return None
         run = dict(row)
-        if run["status"] == "running":
-            raise ValueError("该发现批次正在执行")
+        if run["status"] != "prepared":
+            raise ValueError(f"该发现批次当前状态为 {run['status']}，不能重复提交；中断任务请使用恢复接口")
         terms = json.loads(run["terms_json"])
         allowed = json.loads(run["platforms_json"])
         selected = list(dict.fromkeys(platforms or allowed))
