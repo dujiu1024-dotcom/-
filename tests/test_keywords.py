@@ -141,7 +141,7 @@ def test_verification_batch_records_metrics_and_threshold_decision(tmp_path, mon
                  published_at,query_term,fingerprint,status,created_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (f"content-{idx}", batch["run_id"], "bilibili", f"https://example.com/{idx}",
-                 "批量处理工具", body, "", "", None, "批量处理工具",
+                 "通用标题", body, "", "", None, "批量处理工具",
                  f"fingerprint-{idx}", "new", now))
     monkeypatch.setattr(discovery, "refresh_discovery_run", lambda run_id: {"id": run_id, "status": "succeeded"})
     result = keywords.get_verification_batch(batch["batch_id"])
