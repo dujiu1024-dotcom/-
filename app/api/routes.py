@@ -7,6 +7,7 @@ from app.collectors.reverse_cli import collect as collect_external, install_reve
 from app.config import IMPORT_ROOT
 from app.models import ImportRequest
 from app.services.analysis import get_clusters, get_trends, run_analysis
+from app.services.collection_library import (create_project, create_source, delete_project, delete_source, get_source, list_projects, update_project, update_source)
 from app.services.crawler_engine import (
     engine_status, get_job, import_latest_exports, install_engine, read_job_log,
     session_status, start_job, stop_job, list_jobs,
@@ -32,6 +33,95 @@ class ExternalCollectRequest(BaseModel):
     mode: str = "search"
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=50, ge=1, le=200)
+
+
+class CollectionProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=1000)
+
+
+class CollectionSourceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    platform: str = Field(min_length=1, max_length=40)
+    mode: str = Field(default="search", pattern="^(search|detail|creator|community)$")
+    target: str = Field(min_length=1, max_length=1000)
+    config: dict = Field(default_factory=dict)
+    enabled: bool = True
+
+
+@router.get("/collection/projects")
+def collection_projects():
+    return {"items": list_projects()}
+
+
+@router.post("/collection/projects")
+def collection_project_create(payload: CollectionProjectRequest):
+    return create_project(payload.name, payload.description)
+
+
+@router.patch("/collection/projects/{project_id}")
+def collection_project_update(project_id: str, payload: dict):
+    if "name" in payload and (not str(payload["name"]).strip() or len(str(payload["name"])) > 100):
+        raise HTTPException(422, "项目名称不能为空且不超过 100 字")
+    result = update_project(project_id, payload.get("name"), payload.get("description"))
+    if not result:
+        raise HTTPException(404, "采集项目不存在")
+    return result
+
+
+@router.delete("/collection/projects/{project_id}")
+def collection_project_delete(project_id: str):
+    if not delete_project(project_id):
+        raise HTTPException(404, "采集项目不存在")
+    return {"deleted": True, "id": project_id}
+
+
+@router.post("/collection/projects/{project_id}/sources")
+def collection_source_create(project_id: str, payload: CollectionSourceRequest):
+    source = create_source(project_id, payload.model_dump())
+    if not source:
+        raise HTTPException(404, "采集项目不存在")
+    return source
+
+
+@router.patch("/collection/sources/{source_id}")
+def collection_source_update(source_id: str, payload: dict):
+    source = update_source(source_id, payload)
+    if not source:
+        raise HTTPException(404, "采集对象不存在")
+    return source
+
+
+@router.delete("/collection/sources/{source_id}")
+def collection_source_delete(source_id: str):
+    if not delete_source(source_id):
+        raise HTTPException(404, "采集对象不存在")
+    return {"deleted": True, "id": source_id}
+
+
+@router.post("/collection/sources/{source_id}/run")
+def collection_source_run(source_id: str):
+    source = get_source(source_id)
+    if not source:
+        raise HTTPException(404, "采集对象不存在")
+    if not source["enabled"]:
+        raise HTTPException(409, "该采集对象已停用")
+    config = source["config"]
+    if source["platform"] in {"xhs", "douyin", "kuaishou", "bilibili", "weibo", "tieba", "zhihu"}:
+        payload = {"platform": source["platform"], "mode": source["mode"],
+                   "include_replies": config.get("include_replies", True),
+                   "max_posts": config.get("max_posts", 20),
+                   "max_comments_per_post": config.get("max_comments_per_post", 100)}
+        payload[{"search": "keywords", "detail": "target_ids", "creator": "creator_ids"}.get(source["mode"], "keywords")] = source["target"]
+        try:
+            return start_job(payload)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+    try:
+        return collect_external(source["platform"], "comments" if config.get("collect_comments", True) else source["mode"],
+                                source["target"], int(config.get("limit", 50)))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/platforms")
@@ -165,11 +255,15 @@ def set_time_window(payload: TimeWindowRequest):
 
 @router.get("/comments")
 def comments(since_hours: int | None = Query(None, ge=1, le=8760),
-             platform: str | None = None, include_unknown_time: bool = False):
+             platform: str | None = None, include_unknown_time: bool = False,
+             limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
     hours = since_hours or get_recent_hours()
     rows = list_comments(since_hours=hours, platform=platform,
                          include_unknown_time=include_unknown_time)
-    return {"count": len(rows), "since_hours": hours, "items": rows}
+    total = len(rows)
+    return {"count": min(limit, max(0, total - offset)), "total": total,
+            "limit": limit, "offset": offset, "since_hours": hours,
+            "items": rows[offset:offset + limit]}
 
 
 @router.post("/analysis/run")

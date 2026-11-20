@@ -4,10 +4,12 @@
 
 ## 当前能力
 
-- 本地 Web 工作台：账号会话目录、引擎状态、采集任务、运行日志、结果导入。
+- 本地需求情报工作台：侧边栏分区、情报总览、采集库、评论数据、需求分析、任务中心和系统设置；评论数据支持分页与平台 / 时间筛选。
+- 采集库：按研究主题建立项目，在项目下保存关键词搜索、博主主页、指定内容等采集对象；支持启停、重复运行和删除采集配置，删除配置不删除历史评论。
 - MediaCrawler 运行适配器：首次安装上游代码与依赖，按平台启动可见浏览器。
 - 国内平台：小红书、抖音、快手、B站、微博、贴吧、知乎；扩展平台：今日头条、微信公众号文章、微信视频号、YouTube、Reddit、TikTok、X、Instagram、Threads、LinkedIn、Telegram、Quora，以及 Facebook / Pinterest 公共广告库。未实测连接器均明确标记状态。
 - 任务方式：关键词搜索、指定内容链接 / ID、博主主页。
+- 需求发现：独立搜索策略（研究主题、关键词集合、平台范围）、发现批次、发现内容入库、人工审核后沉淀为长期追踪来源。发现批次会明确区分“已准备”与“平台实际执行”，未接入的搜索适配器不会伪报成功。
 - 一级评论和可选二级回复，JSONL 导出，自动导入统一 SQLite。
 - 评论时间与原帖时间分离，默认 72 小时窗口可在工作台配置（1–8760 小时）。
 - 可选 Social Media Research CLI（MIT）扩展引擎，支持只读采集命令；采集结果尽可能归一化入库。
@@ -50,6 +52,9 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 - `GET /`：本地工作台
 - `GET /health`
+- `GET /api/v1/collection/projects` / `POST /api/v1/collection/projects`
+- `POST /api/v1/collection/projects/{id}/sources` / `PATCH /api/v1/collection/sources/{id}` / `DELETE /api/v1/collection/sources/{id}`
+- `POST /api/v1/collection/sources/{id}/run`
 - `GET /api/v1/engine/status`
 - `POST /api/v1/engine/install`
 - `GET /api/v1/sessions`
@@ -63,6 +68,14 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `POST /api/v1/analysis/run`
 - `GET /api/v1/demands`
 - `GET /api/v1/analytics/trends?since_hours=720&bucket=day`
+- `GET /api/v1/discovery/strategies?project_id=...` / `POST /api/v1/discovery/projects/{project_id}/strategies`
+- `POST /api/v1/discovery/strategies/{strategy_id}/runs`：生成发现批次及查询词清单
+- `POST /api/v1/discovery/runs/{run_id}/execute?platform=bilibili&query_index=0`：启动单个平台、单个搜索词任务\n- `POST /api/v1/discovery/runs/{run_id}/execute-batch`：按策略配置的平台与搜索词生成持久化串行任务队列，单批最多 100 个子任务；后台工作线程自动推进，前端轮询仅用于展示进度
+- `GET /api/v1/discovery/runs/{run_id}`：查询批次状态
+- `GET /api/v1/discovery/runs/{run_id}/tasks`：查询持久化子任务状态、执行记录和结果数
+- `POST /api/v1/discovery/runs/{run_id}/resume`：服务重启导致批次暂停后，在确认旧采集进程已退出的前提下，恢复当前子任务
+- `GET /api/v1/discovery/results` / `POST /api/v1/discovery/runs/{run_id}/results`
+- `POST /api/v1/discovery/results/{content_id}/approve`：审核作者并沉淀为采集库来源
 - `GET /api/v1/collectors/reverse/status` / `POST /api/v1/collectors/reverse/install`
 - `POST /api/v1/collectors/reverse/collect`
 - `GET /docs`
@@ -75,6 +88,10 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - [Social Media Research CLI](https://github.com/ifccod/social-media-research-cli)：MIT，可选扩展引擎；只开放只读命令，不调用发帖、点赞、关注等操作。
 - [OpenMediaCrawl](https://github.com/Tommyapi/OpenMediaCrawl)：MIT，备选 Node.js 采集引擎，当前列入平台能力评估，尚未接入主任务调度。
 - [NewsCrawler](https://github.com/NanmiCoder/NewsCrawler)：GPL-3.0，适合微信公众号 / 今日头条等文章正文提取；不将正文提取误报为评论采集。
+
+## 发现引擎当前边界
+
+当前实现完成搜索策略管理、批次执行、发现结果入库和来源审核闭环。首批七个平台通过 MediaCrawler 的关键词搜索命令执行；每次按一个平台、一个搜索词启动任务，需安装引擎并在本机完成授权。内容导出结构因平台和上游版本可能变化，结果归一化按字段映射尽力提取，真实账号和平台输出仍需逐一验证。其他平台仅登记能力，不代表已接入主动搜索。搜索引擎索引、平台站内搜索和评论获取是不同能力，不能将其中任一项描述为“覆盖全网全部评论”。
 
 ## 明确未完成 / 实测边界
 
