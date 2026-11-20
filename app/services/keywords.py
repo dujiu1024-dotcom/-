@@ -340,7 +340,7 @@ def refresh_verification_batch(batch_id: int) -> dict | None:
                         value = item.get("published_at")
                         if value:
                             try:
-                                published = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                                published = datetime.fromisoformat(value)
                                 if published.tzinfo is None:
                                     published = published.replace(tzinfo=UTC)
                                 ages.append(max(0.0, (datetime.now(UTC) - published.astimezone(UTC)).total_seconds() / 3600))
