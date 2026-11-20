@@ -63,3 +63,22 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
         return [row["embedding"] for row in sorted(data["data"], key=lambda x: x["index"])]
     except (KeyError, TypeError) as exc:
         raise LLMUnavailable(f"Embedding 返回结构错误：{exc}") from exc
+
+def expand_keyword_batch(sources: list[dict]) -> list[dict]:
+    if not LLM_API_KEY or not LLM_MODEL:
+        raise LLMUnavailable("未配置 LLM_API_KEY / LLM_MODEL")
+    system = ("从用户评论/需求表达提取短而具体的搜索词。只返回 JSON {items:[{source_ref,candidates:"
+              "[{keyword,category,reason,original_expression}]}]}。每条来源最多 5 个。覆盖问题表达、场景词、"
+              "痛点词、求助词、替代方案词、付费意愿；不得补充来源没有的事实。source_ref 必须原样返回。"
+              "排除泛词、广告、纯情绪。")
+    data = _post("chat/completions", {"model": LLM_MODEL, "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": json.dumps(sources, ensure_ascii=False)}]})
+    try:
+        items = json.loads(data["choices"][0]["message"]["content"])["items"]
+        refs = {item["source_ref"] for item in sources}
+        return [item for item in items if item.get("source_ref") in refs
+                and isinstance(item.get("candidates"), list)]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise LLMUnavailable(f"扩词模型返回结构错误：{exc}") from exc
