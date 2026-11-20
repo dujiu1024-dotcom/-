@@ -1,17 +1,38 @@
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from app.collectors.mediacrawler_import import normalize_row, read_export
 from app.collectors.registry import list_platforms
+from app.collectors.reverse_cli import collect as collect_external, install_reverse_cli, reverse_status
 from app.config import DEFAULT_RECENT_HOURS, IMPORT_ROOT
 from app.models import ImportRequest
+from app.services.analysis import get_clusters, get_trends, run_analysis
 from app.services.crawler_engine import (
     engine_status, get_job, import_latest_exports, install_engine, read_job_log,
     session_status, start_job, stop_job, list_jobs,
 )
 from app.services.demand import demand_candidates
-from app.storage.db import list_comments, upsert_comment
+from app.services.llm import provider_status
+from app.services.settings import get_settings, update_recent_hours
+from app.storage.db import get_recent_hours, list_comments, upsert_comment
 
 router = APIRouter(prefix="/api/v1")
+
+
+class TimeWindowRequest(BaseModel):
+    hours: int = Field(ge=1, le=8760)
+
+
+class AnalysisRequest(BaseModel):
+    since_hours: int | None = Field(default=None, ge=1, le=8760)
+    limit: int = Field(default=500, ge=1, le=3000)
+
+
+class ExternalCollectRequest(BaseModel):
+    platform: str
+    mode: str = "search"
+    query: str = Field(min_length=1, max_length=500)
+    limit: int = Field(default=50, ge=1, le=200)
 
 
 @router.get("/platforms")
@@ -30,6 +51,29 @@ def post_engine_install():
         return install_engine()
     except (RuntimeError, OSError) as exc:
         raise HTTPException(500, str(exc)) from exc
+
+
+@router.get("/collectors/reverse/status")
+def external_engine_status():
+    return reverse_status()
+
+
+@router.post("/collectors/reverse/install")
+def external_engine_install():
+    try:
+        return install_reverse_cli()
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@router.post("/collectors/reverse/collect")
+def external_collect(payload: ExternalCollectRequest):
+    try:
+        return collect_external(payload.platform, payload.mode, payload.query, payload.limit)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/sessions")
@@ -103,19 +147,50 @@ def import_mediacrawler(request: ImportRequest):
             imported += 1
     except (ValueError, OSError, UnicodeError) as exc:
         raise HTTPException(400, f"导入失败：{exc}") from exc
-    return {"platform": request.platform, "imported": imported, "skipped": skipped, "source": candidate.name}
+    return {"platform": request.platform, "imported": imported, "skipped": skipped,
+            "source": candidate.name}
+
+
+@router.get("/settings")
+def settings():
+    return get_settings()
+
+
+@router.put("/settings/time-window")
+def set_time_window(payload: TimeWindowRequest):
+    try:
+        return update_recent_hours(payload.hours)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/comments")
-def comments(since_hours: int = Query(DEFAULT_RECENT_HOURS, ge=1, le=8760),
+def comments(since_hours: int | None = Query(None, ge=1, le=8760),
              platform: str | None = None, include_unknown_time: bool = False):
-    rows = list_comments(since_hours=since_hours, platform=platform,
+    hours = since_hours or get_recent_hours()
+    rows = list_comments(since_hours=hours, platform=platform,
                          include_unknown_time=include_unknown_time)
-    return {"count": len(rows), "since_hours": since_hours, "items": rows}
+    return {"count": len(rows), "since_hours": hours, "items": rows}
+
+
+@router.post("/analysis/run")
+def analysis_run(payload: AnalysisRequest):
+    try:
+        return run_analysis(payload.since_hours, payload.limit)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.get("/demands")
-def demands(since_hours: int = Query(DEFAULT_RECENT_HOURS, ge=1, le=8760),
-            limit: int = Query(100, ge=1, le=1000)):
-    items = demand_candidates(since_hours=since_hours, limit=limit)
-    return {"count": len(items), "items": items}
+def demands(limit: int = Query(100, ge=1, le=1000)):
+    clusters = get_clusters(limit)
+    if clusters:
+        return {"count": len(clusters), "items": clusters, "sorted_by": "strength_score"}
+    items = demand_candidates(since_hours=get_recent_hours(), limit=limit)
+    return {"count": len(items), "items": items, "sorted_by": "rule_candidates"}
+
+
+@router.get("/analytics/trends")
+def analytics_trends(since_hours: int = Query(720, ge=1, le=8760),
+                     bucket: str = Query("day", pattern="^(hour|day)$")):
+    return get_trends(since_hours, bucket)
