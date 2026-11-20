@@ -12,3 +12,4 @@ vendor/
 data/logs/
 data/exports/
 data/browser_profiles/
+*.egg-info/
