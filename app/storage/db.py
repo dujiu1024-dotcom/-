@@ -73,9 +73,7 @@ def list_comments(since_hours: int | None = None, platform: str | None = None,
         clauses.append("platform = ?")
         params.append(platform)
     if since_hours is not None:
-        cutoff = datetime.now(timezone.utc).timestamp() - since_hours * 3600
-        # SQLite ISO timestamp lexical comparison is safe after normalization below only
-        # for ISO strings with offsets of the same representation; filter in Python instead.
+        # Filter in Python after parsing offsets; do not compare mixed timezone strings lexically.
     sql = "SELECT * FROM comments"
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
