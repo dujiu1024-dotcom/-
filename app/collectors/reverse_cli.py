@@ -14,7 +14,7 @@ COMMANDS = {
     "instagram": {"search": ("instagram", "posts"), "detail": ("instagram", "post")},
     "threads": {"detail": ("threads", "post")},
     "linkedin": {"search": ("linkedin", "post"), "detail": ("linkedin", "post")},
-    "telegram": {"search": ("telegram", "search"), "comments": ("telegram", "posts")},
+    "telegram": {"search": ("telegram", "search"), "detail": ("telegram", "posts")},
     "wechat_mp": {"search": ("wechat_search", "articles"), "detail": ("wechat_mp", "article")},
     "wechat_channels": {"detail": ("wechat_channels", "feed")},
     "quora": {"search": ("quora", "search"), "detail": ("quora", "article")},
@@ -56,4 +56,22 @@ def collect(platform: str, mode: str, query: str, limit: int = 50) -> dict[str, 
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
         payload = {"raw_output": result.stdout[:20000]}
-    return {"platform": platform, "mode": mode, "items": payload, "engine": "reverse CLI"}
+    imported = 0
+    if mode == "comments":
+        from app.collectors.mediacrawler_import import normalize_row
+        from app.storage.db import upsert_comment
+        candidates = payload if isinstance(payload, list) else None
+        if candidates is None and isinstance(payload, dict):
+            for key in ("comments", "items", "data", "results", "replies"):
+                if isinstance(payload.get(key), list):
+                    candidates = payload[key]
+                    break
+        for index, row in enumerate(candidates or [], start=1):
+            if not isinstance(row, dict):
+                continue
+            record = normalize_row(row, platform, index)
+            if record:
+                upsert_comment(record)
+                imported += 1
+    return {"platform": platform, "mode": mode, "items": payload,
+            "imported_comments": imported, "engine": "reverse CLI"}
