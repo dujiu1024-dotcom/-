@@ -100,7 +100,31 @@ def _ensure():
             platform TEXT PRIMARY KEY, cooldown_until REAL NOT NULL,
             reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS discovery_import_batches (
+            id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES discovery_runs(id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL REFERENCES discovery_run_tasks(id) ON DELETE CASCADE,
+            attempt_number INTEGER NOT NULL, platform TEXT NOT NULL,
+            file_path TEXT NOT NULL, file_fingerprint TEXT NOT NULL,
+            file_size INTEGER NOT NULL, modified_at TEXT NOT NULL,
+            row_count INTEGER NOT NULL DEFAULT 0, imported_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'processing',
+            error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, completed_at TEXT,
+            UNIQUE(platform,file_fingerprint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_discovery_import_batches_task
+            ON discovery_import_batches(task_id,attempt_number);
         """)
+        task_columns = {row[1] for row in conn.execute("PRAGMA table_info(discovery_run_tasks)")}
+        for name, definition in {
+            "export_dir": "TEXT NOT NULL DEFAULT ''",
+            "imported_file_count": "INTEGER NOT NULL DEFAULT 0",
+            "imported_row_count": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            if name not in task_columns:
+                conn.execute(f"ALTER TABLE discovery_run_tasks ADD COLUMN {name} {definition}")
+        attempt_columns = {row[1] for row in conn.execute("PRAGMA table_info(discovery_task_attempts)")}
+        if "export_dir" not in attempt_columns:
+            conn.execute("ALTER TABLE discovery_task_attempts ADD COLUMN export_dir TEXT NOT NULL DEFAULT ''")
 
 
 def _claim_worker_lease(owner_id, lease_seconds=_WORKER_LEASE_SECONDS):
@@ -391,24 +415,76 @@ def _content_from_row(row, platform, query_term):
     }
 
 
-def _import_discovery_exports(platform, query_term, started_epoch):
-    folder = DATA_ROOT / "exports" / platform
+def _file_sha256(path):
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _import_discovery_exports(run_id, task_id, attempt_number, platform, query_term, export_dir):
+    folder = Path(export_dir).resolve()
+    export_root = (DATA_ROOT / "exports").resolve()
+    if export_root not in folder.parents:
+        raise ValueError("导入目录不在 exports 隔离目录内")
     if not folder.exists():
-        return []
-    found = []
-    for path in folder.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in {".jsonl", ".ndjson", ".json"}:
+        return {"items": [], "file_count": 0, "imported_file_count": 0, "imported_row_count": 0}
+    found, imported_files, imported_rows, file_count = [], 0, 0, 0
+    for path in sorted(folder.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in {".jsonl", ".ndjson", ".json", ".csv"}:
             continue
-        try:
-            if path.stat().st_mtime < started_epoch:
+        file_count += 1
+        stat = path.stat()
+        fingerprint = _file_sha256(path)
+        relative_path = str(path.relative_to(DATA_ROOT))
+        modified_at = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
+        with connect() as conn:
+            conn.execute("""
+                INSERT OR IGNORE INTO discovery_import_batches
+                    (id,run_id,task_id,attempt_number,platform,file_path,file_fingerprint,
+                     file_size,modified_at,status,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,'processing',?)
+            """, (uuid.uuid4().hex, run_id, task_id, attempt_number, platform,
+                  relative_path, fingerprint, stat.st_size, modified_at, _now()))
+            batch = conn.execute(
+                "SELECT * FROM discovery_import_batches WHERE platform=? AND file_fingerprint=?",
+                (platform, fingerprint),
+            ).fetchone()
+            if batch and batch["status"] == "imported":
                 continue
+            batch_id = batch["id"]
+            conn.execute("UPDATE discovery_import_batches SET status='processing',error='' WHERE id=?",
+                         (batch_id,))
+        file_items, row_count = [], 0
+        try:
             for row in read_export(path):
+                row_count += 1
                 item = _content_from_row(row, platform, query_term)
                 if item:
-                    found.append(item)
-        except (OSError, ValueError, TypeError, KeyError):
-            continue
-    return found
+                    file_items.append(item)
+            imported = ingest_discovered(run_id, file_items) if file_items else {"inserted": 0}
+            with connect() as conn:
+                conn.execute("""
+                    UPDATE discovery_import_batches SET row_count=?,imported_count=?,
+                        skipped_count=?,status='imported',error='',completed_at=?
+                    WHERE id=?
+                """, (row_count, imported["inserted"], max(0, row_count-len(file_items)),
+                      _now(), batch_id))
+            found.extend(file_items)
+            imported_files += 1
+            imported_rows += imported["inserted"]
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            with connect() as conn:
+                conn.execute("""
+                    UPDATE discovery_import_batches SET row_count=?,status='failed',
+                        error=?,completed_at=? WHERE id=?
+                """, (row_count, str(exc)[:1000], _now(), batch_id))
+            raise
+    return {"items": found, "file_count": file_count,
+            "imported_file_count": imported_files, "imported_row_count": imported_rows}
 
 
 def execute_discovery_run(run_id, platform, query_index=0):
@@ -460,6 +536,20 @@ def _start_batch_task(run_id, execution, lease_owner=None):
     if index >= len(execution["tasks"]):
         return None
     task = execution["tasks"][index]
+    with connect() as conn:
+        task_row = conn.execute(
+            "SELECT id,attempt_count FROM discovery_run_tasks WHERE run_id=? AND task_index=?",
+            (run_id, index),
+        ).fetchone()
+    if not task_row:
+        raise RuntimeError("子任务记录不存在，拒绝启动采集")
+    attempt_number = int(task_row["attempt_count"] or 0) + 1
+    export_dir = (DATA_ROOT / "exports" / "runs" / run_id / task_row["id"] /
+                  f"attempt-{attempt_number:04d}").resolve()
+    export_root = (DATA_ROOT / "exports").resolve()
+    if export_root not in export_dir.parents:
+        raise ValueError("计算得到的任务导出目录越界")
+    export_dir.mkdir(parents=True, exist_ok=False)
     started_at = datetime.now(UTC)
     execution.pop("job_id", None)
     execution["starting_at"] = started_at.isoformat()
@@ -484,16 +574,15 @@ def _start_batch_task(run_id, execution, lease_owner=None):
             conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
                          ("子任务状态异常，批次已暂停，请检查任务明细。", run_id))
             raise RuntimeError("子任务未处于可领取状态")
-        task_row = conn.execute(
-            "SELECT id,attempt_count FROM discovery_run_tasks WHERE run_id=? AND task_index=?",
-            (run_id, index),
-        ).fetchone()
+        relative_export_dir = str(export_dir.relative_to(DATA_ROOT))
+        conn.execute("UPDATE discovery_run_tasks SET export_dir=? WHERE id=?",
+                     (relative_export_dir, task_row["id"]))
         conn.execute("""
             INSERT INTO discovery_task_attempts
-                (id,task_id,attempt_number,status,started_at)
-            VALUES(?,?,?,?,?)
+                (id,task_id,attempt_number,status,started_at,export_dir)
+            VALUES(?,?,?,?,?,?)
         """, (uuid.uuid4().hex, task_row["id"], task_row["attempt_count"], "starting",
-              started_at.isoformat()))
+              started_at.isoformat(), relative_export_dir))
     if lease_owner and not _renew_worker_lease(lease_owner):
         with connect() as conn:
             conn.execute("UPDATE discovery_run_tasks SET status='interrupted', finished_at=?, error=? WHERE run_id=? AND task_index=? AND status='starting'",
@@ -504,7 +593,8 @@ def _start_batch_task(run_id, execution, lease_owner=None):
     try:
         job = start_job({"platform": task["platform"], "mode": "search",
                          "keywords": task["query_term"], "max_posts": 30,
-                         "max_comments_per_post": 0, "include_replies": False})
+                         "max_comments_per_post": 0, "include_replies": False,
+                         "export_dir": str(export_dir)})
     except (RuntimeError, OSError, ValueError) as exc:
         with connect() as conn:
             conn.execute("UPDATE discovery_run_tasks SET status='interrupted', finished_at=?, error=? WHERE run_id=? AND task_index=?",
@@ -516,6 +606,8 @@ def _start_batch_task(run_id, execution, lease_owner=None):
         "job_id": job["id"], "platform": task["platform"],
         "query_term": task["query_term"], "query_index": task["query_index"],
         "started_at": started_at.isoformat(), "started_epoch": started_at.timestamp(),
+        "task_id": task_row["id"], "attempt_number": attempt_number,
+        "export_dir": str(export_dir),
     })
     execution.pop("starting_at", None)
     execution.pop("starting_owner", None)
@@ -647,10 +739,17 @@ def _refresh_discovery_run_locked(run_id, lease_owner=None):
                       int(classification["retryable"]), task_row["id"], task_row["attempt_count"]))
     imported_count = 0
     if job["status"] == "succeeded":
-        items = _import_discovery_exports(execution["platform"], execution["query_term"],
-                                          execution["started_epoch"])
-        imported = ingest_discovered(run_id, items) if items else {"inserted": 0}
-        imported_count = imported["inserted"]
+        import_result = _import_discovery_exports(
+            run_id, execution["task_id"], execution["attempt_number"],
+            execution["platform"], execution["query_term"], execution["export_dir"],
+        )
+        imported_count = import_result["imported_row_count"]
+        with connect() as conn:
+            conn.execute("""
+                UPDATE discovery_run_tasks SET imported_file_count=?,imported_row_count=?
+                WHERE run_id=? AND task_index=?
+            """, (import_result["imported_file_count"], imported_count,
+                  run_id, execution.get("cursor", 0)))
     if execution.get("batch"):
         with connect() as conn:
             conn.execute("""UPDATE discovery_run_tasks SET status=?, finished_at=?, result_count=?, error=?
