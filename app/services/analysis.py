@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from app.services.demand import classify
 from app.services.llm import analyze_batch, embed_texts, provider_status
-from app.storage.db import connect, get_recent_hours, list_comments
+from app.storage.db import CommentFilters, connect, get_recent_hours, iter_comments
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_+#.-]{2,}|[\u4e00-\u9fff]{2,}")
 
@@ -73,7 +73,7 @@ def _strength(rows: list[dict], confidence: float) -> float:
 
 def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
     hours = since_hours or get_recent_hours()
-    comments = list_comments(since_hours=hours)[:max(1, min(limit, 3000))]
+    sample_limit = max(1, min(limit, 3000))
     run_at = datetime.now(UTC).isoformat()
     provider = provider_status()
     with connect() as conn:
@@ -82,24 +82,38 @@ def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
         run_id = cur.lastrowid
         conn.commit()
     analyses = []
+    comments_seen = 0
     try:
-        llm_results = []
-        if provider["configured"]:
-            for start in range(0, len(comments), 25):
-                llm_results.extend(analyze_batch(comments[start:start + 25]))
-        else:
-            for row in comments:
-                category = classify(row["comment_text"])
-                llm_results.append({"id": f"{row['platform']}::{row['comment_id']}",
-                    "is_demand": bool(category), "category": category or "其他",
-                    "need_summary": row["comment_text"][:120], "intent": "规则初筛" if category else "非明确需求",
-                    "confidence": 0.55 if category else 0.0, "semantic_text": row["comment_text"]})
-        by_id = {item["id"]: item for item in llm_results}
-        for row in comments:
-            item = by_id.get(f"{row['platform']}::{row['comment_id']}")
-            if item and item.get("is_demand"):
-                analyses.append({**row, **item})
-        vectors = embed_texts([item["semantic_text"] for item in analyses]) if provider["embedding_model"] else None
+        # Time-window filtering and the hard sample cap execute in SQLite.
+        # Only one bounded read batch is held while the existing analysis logic runs.
+        for batch_start in range(0, sample_limit, 250):
+            batch = list(iter_comments(
+                CommentFilters(since_hours=hours),
+                batch_size=250,
+                limit=min(250, sample_limit - batch_start),
+            ))
+            if not batch:
+                break
+            comments_seen += len(batch)
+            for start in range(0, len(batch), 25):
+                chunk = batch[start:start + 25]
+                if provider["configured"]:
+                    llm_results = analyze_batch(chunk)
+                else:
+                    llm_results = []
+                    for row in chunk:
+                        category = classify(row["comment_text"])
+                        llm_results.append({"id": f"{row['platform']}::{row['comment_id']}",
+                            "is_demand": bool(category), "category": category or "其他",
+                            "need_summary": row["comment_text"][:120],
+                            "intent": "规则初筛" if category else "非明确需求",
+                            "confidence": 0.55 if category else 0.0,
+                            "semantic_text": row["comment_text"]})
+                by_id = {item["id"]: item for item in llm_results}
+                for row in chunk:
+                    item = by_id.get(f"{row['platform']}::{row['comment_id']}")
+                    if item and item.get("is_demand"):
+                        analyses.append({**row, **item})
         groups = _clusters(analyses, vectors)
         clusters, saved = [], []
         for group in groups:
@@ -138,8 +152,8 @@ def run_analysis(since_hours: int | None = None, limit: int = 500) -> dict:
                      c["first_seen"], c["last_seen"], run_at, json.dumps(c["evidence"], ensure_ascii=False)))
             conn.execute("""UPDATE analysis_runs SET finished_at=?,comments_seen=?,demands_found=?,
                 clusters_found=?,status='succeeded' WHERE id=?""",
-                (datetime.now(UTC).isoformat(), len(comments), len(analyses), len(clusters), run_id))
-        return {"run_id": run_id, "provider": provider, "comments_seen": len(comments),
+                (datetime.now(UTC).isoformat(), comments_seen, len(analyses), len(clusters), run_id))
+        return {"run_id": run_id, "provider": provider, "comments_seen": comments_seen,
                 "demands_found": len(analyses), "clusters_found": len(clusters),
                 "clusters": sorted(clusters, key=lambda c: c["strength_score"], reverse=True)}
     except Exception as exc:
