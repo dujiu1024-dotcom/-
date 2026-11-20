@@ -1,5 +1,5 @@
 import re
-from collections import Counter
+
 from app.storage.db import list_comments
 
 PATTERNS = {
@@ -10,7 +10,7 @@ PATTERNS = {
     "效率需求": r"(自动化|批量处理|自动整理|自动生成|省时间)",
     "购买意向": r"(多少钱|哪里买|怎么买|求链接|付费版)",
 }
-NEGATIVE = re.compile(r"^(哈哈哈+|顶|来了|支持|路过|赞|👍|😂|666+)$", re.I)
+NEGATIVE = re.compile(r"^(哈哈哈+|顶|来了|支持|路过|赞|👍|😂|666+)$", re.IGNORECASE)
 
 
 def classify(text: str) -> str | None:
@@ -18,7 +18,7 @@ def classify(text: str) -> str | None:
     if len(value) < 5 or NEGATIVE.match(value):
         return None
     for label, pattern in PATTERNS.items():
-        if re.search(pattern, value, re.I):
+        if re.search(pattern, value, re.IGNORECASE):
             return label
     return None
 
