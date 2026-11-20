@@ -238,6 +238,9 @@ def execute_discovery_run(run_id, platform, query_index=0):
         if run["status"] == "running":
             raise ValueError("该发现批次已有平台任务运行中，请先刷新任务状态")
         terms = json.loads(run["terms_json"])
+        allowed_platforms = json.loads(run["platforms_json"])
+        if allowed_platforms and platform not in allowed_platforms:
+            raise ValueError(f"该搜索策略未启用平台：{platform}")
         if query_index < 0 or query_index >= len(terms):
             raise ValueError("搜索词序号超出范围")
         term = terms[query_index]
@@ -267,7 +270,11 @@ def refresh_discovery_run(run_id):
                 "notes": run["notes"]}
     job = get_job(execution["job_id"])
     if not job:
-        return {"id": run_id, "status": "running", "notes": "等待本机任务状态更新"}
+        notes = "本机任务记录不存在，可能服务重启导致任务状态丢失；请重新创建发现批次。"
+        with connect() as conn:
+            conn.execute("UPDATE discovery_runs SET status='failed', finished_at=?, notes=? WHERE id=?",
+                         (_now(), notes, run_id))
+        return {"id": run_id, "status": "failed", "notes": notes}
     if job["status"] == "running":
         return {"id": run_id, "status": "running", "job": job, "notes": "平台搜索执行中"}
     if job["status"] == "succeeded":
