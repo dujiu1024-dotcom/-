@@ -40,9 +40,7 @@ def _enable_isolated_profiles() -> None:
             raise RuntimeError("未能安全关闭 MediaCrawler 的 CDP 共享浏览器模式，请检查上游版本")
         patched = source
     patched, save_count = re.subn(r"(?m)^SAVE_LOGIN_STATE\s*=\s*False\s*$", "SAVE_LOGIN_STATE = True", patched)
-    if save_count:
-        config_file.write_text(patched, encoding="utf-8")
-    elif count:
+    if save_count or count:
         config_file.write_text(patched, encoding="utf-8")
 
 
