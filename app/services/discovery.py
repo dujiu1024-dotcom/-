@@ -1,7 +1,11 @@
 import json
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
+from app.config import DATA_ROOT
+from app.services.crawler_engine import SUPPORTED, get_job, start_job
+from app.collectors.mediacrawler_import import read_export
 from app.storage.db import connect
 
 
@@ -23,7 +27,7 @@ def _ensure():
             id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL REFERENCES search_strategies(id) ON DELETE CASCADE,
             status TEXT NOT NULL, query_count INTEGER NOT NULL DEFAULT 0,
             result_count INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL,
-            finished_at TEXT, notes TEXT NOT NULL DEFAULT ''
+            finished_at TEXT, notes TEXT NOT NULL DEFAULT '', execution_json TEXT NOT NULL DEFAULT '{}'
         );
         CREATE TABLE IF NOT EXISTS discovered_contents (
             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES discovery_runs(id) ON DELETE CASCADE,
@@ -35,6 +39,9 @@ def _ensure():
         );
         CREATE INDEX IF NOT EXISTS idx_discovered_contents_run ON discovered_contents(run_id);
         """)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(discovery_runs)")}
+        if "execution_json" not in columns:
+            conn.execute("ALTER TABLE discovery_runs ADD COLUMN execution_json TEXT NOT NULL DEFAULT '{}'")
 
 
 def list_strategies(project_id=None):
@@ -154,3 +161,107 @@ def approve_discovered_source(content_id):
         conn.execute("UPDATE discovered_contents SET status='approved' WHERE id=?", (content_id,))
         conn.execute("UPDATE collection_projects SET updated_at=? WHERE id=?", (now, project_id))
     return {"approved": True, "source_id": source_id, "content_id": content_id}
+
+
+def _content_from_row(row, platform, query_term):
+    title = next((row.get(k) for k in ("title", "note_title", "desc", "description", "视频标题", "标题", "name") if row.get(k)), "")
+    body = next((row.get(k) for k in ("content", "text", "note_desc", "description", "desc", "正文") if row.get(k)), "")
+    url = next((row.get(k) for k in ("content_url", "url", "share_url", "链接") if row.get(k)), "")
+    content_id = next((row.get(k) for k in ("note_id", "aweme_id", "video_id", "bvid", "object_id", "id") if row.get(k)), "")
+    if not url and content_id:
+        url = str(content_id)
+    author = row.get("nickname") or row.get("author_name") or row.get("user_name") or row.get("name") or ""
+    author_url = row.get("author_url") or row.get("profile_url") or row.get("user_url") or ""
+    author_id = row.get("user_id") or row.get("sec_uid") or row.get("mid") or row.get("uid")
+    if not author_url and author_id:
+        author_url = str(author_id)
+    if not (title or body) or not url:
+        return None
+    return {
+        "platform": platform, "content_url": str(url), "title": str(title or "")[:500],
+        "body": str(body or "")[:10000], "author_name": str(author or "")[:200],
+        "author_url": str(author_url or ""), "query_term": query_term,
+        "fingerprint": f"{platform}:{content_id or url}",
+        "published_at": row.get("create_time") or row.get("publish_time") or row.get("发布时间"),
+    }
+
+
+def _import_discovery_exports(platform, query_term, started_epoch):
+    folder = DATA_ROOT / "exports" / platform
+    if not folder.exists():
+        return []
+    found = []
+    for path in folder.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {".jsonl", ".ndjson", ".json"}:
+            continue
+        try:
+            if path.stat().st_mtime < started_epoch:
+                continue
+            for row in read_export(path):
+                item = _content_from_row(row, platform, query_term)
+                if item:
+                    found.append(item)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return found
+
+
+def execute_discovery_run(run_id, platform, query_index=0):
+    if platform not in SUPPORTED:
+        raise ValueError(f"{platform} 暂未接入原生搜索执行；首批支持：{', '.join(SUPPORTED)}")
+    with connect() as conn:
+        row = conn.execute("""SELECT r.*, s.terms_json, s.platforms_json
+            FROM discovery_runs r JOIN search_strategies s ON s.id=r.strategy_id
+            WHERE r.id=?""", (run_id,)).fetchone()
+        if not row:
+            return None
+        run = dict(row)
+        if run["status"] == "running":
+            raise ValueError("该发现批次已有平台任务运行中，请先刷新任务状态")
+        terms = json.loads(run["terms_json"])
+        if query_index < 0 or query_index >= len(terms):
+            raise ValueError("搜索词序号超出范围")
+        term = terms[query_index]
+        started_at = datetime.now(UTC)
+        job = start_job({"platform": platform, "mode": "search", "keywords": term,
+                         "max_posts": 30, "max_comments_per_post": 100,
+                         "include_replies": False})
+        execution = {"platform": platform, "query_term": term, "query_index": query_index,
+                     "job_id": job["id"], "started_at": started_at.isoformat(),
+                     "started_epoch": started_at.timestamp()}
+        conn.execute("""UPDATE discovery_runs SET status='running', execution_json=?,
+            notes=? WHERE id=?""",
+            (json.dumps(execution, ensure_ascii=False),
+             f"正在执行 {platform} 搜索：{term}", run_id))
+    return {"run_id": run_id, "status": "running", **execution}
+
+
+def refresh_discovery_run(run_id):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM discovery_runs WHERE id=?", (run_id,)).fetchone()
+        if not row:
+            return None
+        run = dict(row)
+        execution = json.loads(run.get("execution_json") or "{}")
+    if run["status"] != "running" or not execution.get("job_id"):
+        return {"id": run_id, "status": run["status"], "result_count": run["result_count"],
+                "notes": run["notes"]}
+    job = get_job(execution["job_id"])
+    if not job:
+        return {"id": run_id, "status": "running", "notes": "等待本机任务状态更新"}
+    if job["status"] == "running":
+        return {"id": run_id, "status": "running", "job": job, "notes": "平台搜索执行中"}
+    if job["status"] == "succeeded":
+        items = _import_discovery_exports(execution["platform"], execution["query_term"],
+                                          execution["started_epoch"])
+        imported = ingest_discovered(run_id, items) if items else {"inserted": 0}
+        final_status = "succeeded"
+        notes = f"平台任务完成；发现内容入库 {imported['inserted']} 条。"
+    else:
+        final_status = "failed"
+        notes = f"平台任务失败，退出码：{job.get('exit_code', 'unknown')}；请查看采集任务日志。"
+    with connect() as conn:
+        conn.execute("UPDATE discovery_runs SET status=?, finished_at=?, notes=? WHERE id=?",
+                     (final_status, _now(), notes, run_id))
+    return {"id": run_id, "status": final_status, "result_count": list_discovered(run_id)["total"],
+            "notes": notes, "job": job}
