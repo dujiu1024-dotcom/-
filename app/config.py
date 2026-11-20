@@ -1,5 +1,5 @@
-from pathlib import Path
 import os
+from pathlib import Path
 
 APP_NAME = os.getenv("APP_NAME", "社交平台需求雷达")
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "./data/demand_radar.sqlite3"))
