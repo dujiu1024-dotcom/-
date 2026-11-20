@@ -117,7 +117,7 @@ def start_job(payload: dict[str, Any]) -> dict[str, Any]:
         log_path = log_dir / f"{job_id}.log"
         with log_path.open("w", encoding="utf-8") as stream:
             process = subprocess.Popen(command, cwd=ENGINE_ROOT, stdout=stream, stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
-        job = {"id": job_id, "platform": platform, "mode": payload.get("mode", "search"), "status": "running", "started_at": _now(), "finished_at": None, "pid": process.pid, "log_file": str(log_path), "export_dir": str(export_dir), "command": command[1:]}
+        job = {"id": job_id, "platform": platform, "mode": payload.get("mode", "search"), "status": "running", "started_at": _now(), "finished_at": None, "pid": process.pid, "log_file": str(log_path), "export_dir": str(export_dir), "command": command[1:], "retry_count": 0, "error_category": None, "error_code": None, "error_message": None, "error_occurred_at": None, "retryable": False, "manual_intervention": False, "error_hint": None}
         _jobs[job_id] = job
         _processes[job_id] = process
         threading.Thread(target=_watch_job, args=(job_id,), daemon=True).start()
@@ -136,6 +136,7 @@ def _watch_job(job_id: str) -> None:
             log_path = Path(job["log_file"])
             log_excerpt = log_path.read_text(encoding="utf-8", errors="replace")[-12000:] if log_path.is_file() else ""
             classification = classify_collection_error(log_excerpt or f"采集进程退出码：{code}")
+            job["error_occurred_at"] = job["finished_at"]
             job["error_category"] = classification["category"]
             job["error_code"] = classification["code"]
             job["error_message"] = classification["message"][-2000:]
