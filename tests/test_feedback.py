@@ -69,3 +69,29 @@ def test_feedback_repository_preserves_original_comment(tmp_path, monkeypatch):
     )
     after = db.page_comments(limit=10)[0]["comment_text"]
     assert before == after == "希望增加导出功能"
+
+
+
+def test_feedback_supports_content_and_demand_cluster_targets(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "feedback-targets.sqlite3")
+    db.upsert_comment(_comment())
+    with db.connect() as conn:
+        conn.execute(
+            """INSERT INTO demand_clusters(
+                cluster_id,label,category,member_count,platform_count,unique_authors,
+                strength_score,first_seen,last_seen,updated_at,evidence_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            ("cluster-1", "数据导出需求", "功能需求", 1, 1, 1, 50.0,
+             None, None, "2026-11-20T00:00:00+00:00", "[]"),
+        )
+    client = TestClient(app)
+    content = client.post("/api/v1/feedback", json={
+        "target_type": "content", "target_id": "post-1", "label": "valid_demand"
+    })
+    cluster = client.post("/api/v1/feedback", json={
+        "target_type": "demand_cluster", "target_id": "cluster-1", "label": "split",
+        "reason": "簇内存在两个不同问题",
+    })
+    assert content.status_code == 201
+    assert cluster.status_code == 201
+    assert client.get("/api/v1/feedback?target_type=demand_cluster").json()["total"] == 1

@@ -13,7 +13,7 @@ from app.services.crawler_engine import (
 )
 from app.services.demand import demand_candidates
 from app.services.settings import get_settings, update_recent_hours
-from app.storage.db import (connect, create_feedback, get_recent_hours, list_comments, list_feedback, upsert_comment)
+from app.storage.db import (create_feedback, get_recent_hours, list_comments, list_feedback, upsert_comment)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -194,7 +194,7 @@ def post_feedback(payload: FeedbackRequest):
             if "::" not in target_id:
                 raise HTTPException(422, "评论 target_id 必须使用 platform::comment_id")
             platform, comment_id = target_id.split("::", 1)
-            with connect() as conn:
+            with __import__("app.storage.db", fromlist=["connect"]).connect() as conn:
                 exists = conn.execute(
                     "SELECT 1 FROM comments WHERE platform=? AND comment_id=?",
                     (platform, comment_id),
