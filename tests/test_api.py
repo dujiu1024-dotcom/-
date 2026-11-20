@@ -14,7 +14,7 @@ def test_dashboard_and_engine_status():
     client = TestClient(app)
     page = client.get("/")
     assert page.status_code == 200
-    assert "社交平台需求雷达" in page.text
+    assert "需求情报工作台" in page.text\n    assert "采集库" in page.text
     status = client.get("/api/v1/engine/status").json()
     assert "installed" in status
     sessions = client.get("/api/v1/sessions").json()
