@@ -185,3 +185,142 @@ def get_candidate(candidate_id: int) -> dict | None:
         reviews = conn.execute("SELECT * FROM keyword_reviews WHERE candidate_id=? ORDER BY created_at DESC",
                                (candidate_id,)).fetchall()
     return {**dict(row), "reviews": [dict(item) for item in reviews]}
+
+
+def start_verification_batch(project_id: str, platform: str, candidate_ids: list[int],
+                             requested_limit: int = 20) -> dict:
+    from app.services.crawler_engine import SUPPORTED
+    from app.services.discovery import create_discovery_run, create_strategy, execute_discovery_batch
+
+    if platform not in SUPPORTED:
+        raise ValueError("该平台暂不支持真实关键词试搜")
+    ids = list(dict.fromkeys(candidate_ids))[:100]
+    if not ids:
+        raise ValueError("至少选择一个候选词")
+    with connect() as conn:
+        marks = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT * FROM keyword_candidates WHERE project_id=? AND id IN ({marks})",
+            [project_id, *ids]).fetchall()
+    if len(rows) != len(ids):
+        raise ValueError("候选词不存在或不属于当前项目")
+    terms = [row["keyword"] for row in rows]
+    strategy = create_strategy(project_id, {"name": f"候选词验证-{datetime.now(UTC).strftime('%H%M%S')}",
+        "topic": "AI 搜索词质量验证", "terms": terms, "platforms": [platform], "enabled": True})
+    if not strategy:
+        raise ValueError("研究项目不存在；请使用采集库中的项目 ID")
+    run = create_discovery_run(strategy["id"])
+    now = datetime.now(UTC).isoformat()
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO keyword_verification_batches(project_id,platform,status,requested_limit,created_at) VALUES(?,?, 'queued', ?, ?)",
+            (project_id, platform, max(1, min(requested_limit, 100)), now))
+        batch_id = cur.lastrowid
+        conn.execute("CREATE TABLE IF NOT EXISTS keyword_verification_run_links (batch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL)")
+        conn.execute("INSERT INTO keyword_verification_run_links(batch_id,run_id) VALUES(?,?)",
+                     (batch_id, run["id"]))
+    try:
+        execute_discovery_batch(run["id"], [platform], max_tasks=100)
+    except (ValueError, RuntimeError) as exc:
+        with connect() as conn:
+            conn.execute("UPDATE keyword_verification_batches SET status='failed',finished_at=?,error=? WHERE id=?",
+                         (datetime.now(UTC).isoformat(), str(exc)[:1000], batch_id))
+        raise
+    return {"batch_id": batch_id, "run_id": run["id"], "project_id": project_id,
+            "platform": platform, "status": "queued", "candidate_count": len(rows),
+            "requested_limit": requested_limit}
+
+
+def refresh_verification_batch(batch_id: int) -> dict | None:
+    from app.services.discovery import refresh_discovery_run
+
+    with connect() as conn:
+        batch = conn.execute("SELECT * FROM keyword_verification_batches WHERE id=?", (batch_id,)).fetchone()
+        if not batch:
+            return None
+        link = conn.execute("SELECT run_id FROM keyword_verification_run_links WHERE batch_id=?",
+                            (batch_id,)).fetchone()
+    if not link:
+        return dict(batch)
+    run = refresh_discovery_run(link["run_id"])
+    status = run.get("status", "failed")
+    if status in {"succeeded", "failed", "paused"}:
+        now = datetime.now(UTC).isoformat()
+        if status == "succeeded":
+            with connect() as conn:
+                candidates = conn.execute(
+                    """SELECT c.* FROM keyword_candidates c
+                       JOIN keyword_verification_results r ON r.candidate_id=c.id
+                       WHERE r.batch_id=?""", (batch_id,)).fetchall()
+            if not candidates:
+                with connect() as conn:
+                    candidates = conn.execute(
+                        "SELECT * FROM keyword_candidates WHERE project_id=?",
+                        (batch["project_id"],)).fetchall()
+            with connect() as conn:
+                discovered = conn.execute("SELECT * FROM discovered_contents WHERE run_id=?",
+                                           (link["run_id"],)).fetchall()
+                for candidate in candidates:
+                    hits = [dict(item) for item in discovered
+                            if normalize_keyword(item["query_term"]) == candidate["normalized_keyword"]]
+                    valid = [item for item in hits if classify((item.get("title", "") + " " + item.get("body", "")).strip())]
+                    title_keys = [normalize_keyword(item.get("title", "")) for item in hits]
+                    duplicate_rate = (len(title_keys) - len(set(title_keys))) / len(title_keys) if title_keys else 0.0
+                    irrelevant_rate = (len(hits) - len(valid)) / len(hits) if hits else 1.0
+                    conn.execute(
+                        """INSERT OR REPLACE INTO keyword_verification_results
+                        (batch_id,candidate_id,hit_count,valid_demand_count,duplicate_rate,
+                         irrelevant_rate,failure_reason,evidence_json,created_at)
+                        VALUES(?,?,?,?,?,?,?,?,?)""",
+                        (batch_id, candidate["id"], len(hits), len(valid), round(duplicate_rate, 4),
+                         round(irrelevant_rate, 4), "未命中" if not hits else None,
+                         json.dumps([{"title": x["title"], "url": x["content_url"],
+                                      "body": x["body"][:500]} for x in hits[:20]], ensure_ascii=False), now))
+            final_status = "succeeded"
+        else:
+            final_status = "failed"
+        with connect() as conn:
+            conn.execute("UPDATE keyword_verification_batches SET status=?,finished_at=?,error=? WHERE id=?",
+                         (final_status, now, run.get("notes") if final_status == "failed" else None, batch_id))
+    with connect() as conn:
+        results = conn.execute(
+            """SELECT r.*,c.keyword,c.category FROM keyword_verification_results r
+               JOIN keyword_candidates c ON c.id=r.candidate_id WHERE r.batch_id=? ORDER BY c.keyword""",
+            (batch_id,)).fetchall()
+        latest = conn.execute("SELECT * FROM keyword_verification_batches WHERE id=?", (batch_id,)).fetchone()
+    return {**dict(latest), "run": run, "results": [dict(r) for r in results]}
+
+
+def get_verification_batch(batch_id: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM keyword_verification_batches WHERE id=?", (batch_id,)).fetchone()
+        if not row:
+            return None
+    return refresh_verification_batch(batch_id)
+
+
+def update_quality_thresholds(project_id: str, values: dict) -> dict:
+    now = datetime.now(UTC).isoformat()
+    defaults = {"min_hits": 3, "min_valid_demands": 1,
+                "max_duplicate_rate": 0.7, "max_irrelevant_rate": 0.6}
+    defaults.update(values)
+    if not 0 <= defaults["max_duplicate_rate"] <= 1 or not 0 <= defaults["max_irrelevant_rate"] <= 1:
+        raise ValueError("重复率和无关率阈值必须在 0 到 1 之间")
+    with connect() as conn:
+        conn.execute("""INSERT INTO keyword_quality_thresholds
+            (project_id,min_hits,min_valid_demands,max_duplicate_rate,max_irrelevant_rate,updated_at)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+            min_hits=excluded.min_hits,min_valid_demands=excluded.min_valid_demands,
+            max_duplicate_rate=excluded.max_duplicate_rate,max_irrelevant_rate=excluded.max_irrelevant_rate,
+            updated_at=excluded.updated_at""",
+            (project_id, defaults["min_hits"], defaults["min_valid_demands"],
+             defaults["max_duplicate_rate"], defaults["max_irrelevant_rate"], now))
+    return {"project_id": project_id, **defaults, "updated_at": now}
+
+
+def get_quality_thresholds(project_id: str) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM keyword_quality_thresholds WHERE project_id=?",
+                           (project_id,)).fetchone()
+    return dict(row) if row else {"project_id": project_id, "min_hits": 3,
+        "min_valid_demands": 1, "max_duplicate_rate": 0.7, "max_irrelevant_rate": 0.6}
