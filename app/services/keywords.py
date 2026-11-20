@@ -259,6 +259,9 @@ def start_verification_batch(project_id: str, platform: str, candidate_ids: list
     from app.services.crawler_engine import SUPPORTED
     from app.services.discovery import create_discovery_run, create_strategy, execute_discovery_batch
 
+    if not 10 <= requested_limit <= 30:
+        raise ValueError("每个搜索词的试搜结果数必须在 10 到 30 条之间")
+    requested_limit = int(requested_limit)
     if platform not in SUPPORTED:
         raise ValueError("该平台暂不支持真实关键词试搜")
     ids = list(dict.fromkeys(candidate_ids))[:100]
@@ -281,7 +284,7 @@ def start_verification_batch(project_id: str, platform: str, candidate_ids: list
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO keyword_verification_batches(project_id,platform,status,requested_limit,created_at) VALUES(?,?, 'queued', ?, ?)",
-            (project_id, platform, max(1, min(requested_limit, 100)), now))
+            (project_id, platform, requested_limit, now))
         batch_id = cur.lastrowid
         conn.execute("CREATE TABLE IF NOT EXISTS keyword_verification_run_links (batch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL)")
         conn.execute("INSERT INTO keyword_verification_run_links(batch_id,run_id) VALUES(?,?)",
