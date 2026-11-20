@@ -1,9 +1,11 @@
 import csv
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
+
 from dateutil import parser as date_parser
+
 from app.models import CommentRecord
 
 
@@ -37,14 +39,14 @@ def _parse_datetime(value):
         if number > 10**12:
             number /= 1000
         try:
-            return datetime.fromtimestamp(number, timezone.utc)
+            return datetime.fromtimestamp(number, UTC)
         except (ValueError, OSError, OverflowError):
             return None
     try:
         parsed = date_parser.parse(str(value))
         if parsed.tzinfo is None:
             return None  # no timezone: do not guess and misclassify a 72-hour record
-        return parsed.astimezone(timezone.utc)
+        return parsed.astimezone(UTC)
     except (ValueError, TypeError, OverflowError):
         return None
 
