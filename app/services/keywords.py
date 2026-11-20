@@ -219,6 +219,9 @@ def start_verification_batch(project_id: str, platform: str, candidate_ids: list
         conn.execute("CREATE TABLE IF NOT EXISTS keyword_verification_run_links (batch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL)")
         conn.execute("INSERT INTO keyword_verification_run_links(batch_id,run_id) VALUES(?,?)",
                      (batch_id, run["id"]))
+        conn.execute("CREATE TABLE IF NOT EXISTS keyword_verification_batch_candidates (batch_id INTEGER NOT NULL, candidate_id INTEGER NOT NULL, PRIMARY KEY(batch_id,candidate_id))")
+        conn.executemany("INSERT INTO keyword_verification_batch_candidates(batch_id,candidate_id) VALUES(?,?)",
+                         [(batch_id, row["id"]) for row in rows])
     try:
         execute_discovery_batch(run["id"], [platform], max_tasks=100)
     except (ValueError, RuntimeError) as exc:
@@ -250,13 +253,8 @@ def refresh_verification_batch(batch_id: int) -> dict | None:
             with connect() as conn:
                 candidates = conn.execute(
                     """SELECT c.* FROM keyword_candidates c
-                       JOIN keyword_verification_results r ON r.candidate_id=c.id
-                       WHERE r.batch_id=?""", (batch_id,)).fetchall()
-            if not candidates:
-                with connect() as conn:
-                    candidates = conn.execute(
-                        "SELECT * FROM keyword_candidates WHERE project_id=?",
-                        (batch["project_id"],)).fetchall()
+                       JOIN keyword_verification_batch_candidates b ON b.candidate_id=c.id
+                       WHERE b.batch_id=?""", (batch_id,)).fetchall()
             with connect() as conn:
                 discovered = conn.execute("SELECT * FROM discovered_contents WHERE run_id=?",
                                            (link["run_id"],)).fetchall()
