@@ -153,6 +153,9 @@ def test_discovery_batch_runs_platforms_sequentially(tmp_path, monkeypatch):
     assert started.status_code == 200
     assert started.json()["task_count"] == 2
     assert started.json()["current_task"]["platform"] == "bilibili"
+    duplicate = client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={})
+    assert duplicate.status_code == 409
+    assert client.get(f"/api/v1/discovery/runs/{run['id']}/tasks").json()["total"] == 2
     task_snapshot = client.get(f"/api/v1/discovery/runs/{run['id']}/tasks").json()
     assert task_snapshot["total"] == 2
     assert [item["status"] for item in task_snapshot["items"]] == ["running", "queued"]
