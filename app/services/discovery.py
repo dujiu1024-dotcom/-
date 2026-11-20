@@ -12,6 +12,7 @@ from app.storage.db import connect
 _worker_lock = threading.Lock()
 _worker_thread = None
 _worker_stop = threading.Event()
+_refresh_lock = threading.RLock()
 
 
 def _now():
@@ -340,7 +341,7 @@ def execute_discovery_batch(run_id, platforms=None, max_tasks=100):
             "current_task": tasks[0]}
 
 
-def refresh_discovery_run(run_id):
+def _refresh_discovery_run_locked(run_id):
     with connect() as conn:
         row = conn.execute("SELECT * FROM discovery_runs WHERE id=?", (run_id,)).fetchone()
         if not row:
@@ -421,6 +422,11 @@ def refresh_discovery_run(run_id):
 
 
 
+def refresh_discovery_run(run_id):
+    with _refresh_lock:
+        return _refresh_discovery_run_locked(run_id)
+
+
 def resume_discovery_batch(run_id):
     with connect() as conn:
         row = conn.execute("SELECT * FROM discovery_runs WHERE id=?", (run_id,)).fetchone()
@@ -471,7 +477,17 @@ def start_discovery_worker():
             while not _worker_stop.is_set():
                 try:
                     with connect() as conn:
+                        queued = conn.execute("SELECT id,execution_json FROM discovery_runs WHERE status='queued' ORDER BY started_at").fetchall()
                         rows = conn.execute("SELECT id FROM discovery_runs WHERE status='running' ORDER BY started_at").fetchall()
+                    for queued_run in queued:
+                        if _worker_stop.is_set():
+                            break
+                        try:
+                            execution = json.loads(queued_run["execution_json"] or "{}")
+                            if execution.get("batch") and not execution.get("job_id"):
+                                _start_batch_task(queued_run["id"], execution)
+                        except (RuntimeError, OSError, ValueError):
+                            continue
                     for row in rows:
                         if _worker_stop.is_set():
                             break
