@@ -1,7 +1,12 @@
 from pathlib import Path
 
 from app.storage import db
-from benchmarks.benchmark_comments import (\n    THRESHOLDS,\n    benchmark_dataset,\n    evaluate_regression,\n    populate_comments,\n)
+from benchmarks.benchmark_comments import (
+    THRESHOLDS,
+    benchmark_dataset,
+    evaluate_regression,
+    populate_comments,
+)
 
 
 def test_synthetic_dataset_is_reproducible_and_queryable(tmp_path, monkeypatch):
@@ -30,7 +35,6 @@ def test_benchmark_reports_latency_memory_and_database_size(tmp_path):
     assert result["first_page_peak_bytes"] > 0
     assert result["stream_5000_peak_bytes"] > 0
     assert result["database_size_bytes"] > 0
-
 
 
 def test_performance_regression_gate_rejects_threshold_breach():
