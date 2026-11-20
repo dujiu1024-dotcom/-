@@ -87,13 +87,13 @@ def test_discovery_executes_platform_search_and_imports_posts(tmp_path, monkeypa
     assert started.json()["status"] == "running"
     assert job["id"] == started.json()["job_id"]
 
-    folder = export_root / "exports" / "bilibili"
+    folder = tmp_path / "exports" / "bilibili"
     folder.mkdir(parents=True)
     export = folder / "contents.jsonl"
     export.write_text(json.dumps({
         "bvid": "BV123", "title": "AI 工具真实体验", "desc": "寻找自动化工具",
         "mid": "9988", "name": "效率观察员"
-    }, ensure_ascii=False) + "\\n", encoding="utf-8")
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
     now = time.time()
     import os
     os.utime(export, (now, now))
