@@ -13,6 +13,7 @@ from app.services.crawler_engine import (
 )
 from app.services.demand import demand_candidates
 from app.services.settings import get_settings, update_recent_hours
+from app.services.quality import quality_overview
 from app.storage.db import (create_feedback, get_recent_hours, list_comments, list_feedback, upsert_comment)
 
 router = APIRouter(prefix="/api/v1")
@@ -263,3 +264,14 @@ def demands(limit: int = Query(100, ge=1, le=1000)):
 def analytics_trends(since_hours: int = Query(720, ge=1, le=8760),
                      bucket: str = Query("day", pattern="^(hour|day)$")):
     return get_trends(since_hours, bucket)
+
+
+
+@router.get("/quality/overview")
+def get_quality_overview(
+    since_hours: int = Query(168, ge=1, le=8760),
+):
+    try:
+        return quality_overview(since_hours)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import DATA_ROOT, ENGINE_ROOT, ENGINE_URL
+from app.storage.db import finish_collection_task, start_collection_task
 
 SUPPORTED = {"xhs": "xhs", "douyin": "dy", "kuaishou": "ks", "bilibili": "bili", "weibo": "wb", "tieba": "tieba", "zhihu": "zhihu"}
 MODES = {"search", "detail", "creator"}
@@ -114,13 +115,48 @@ def start_job(payload: dict[str, Any]) -> dict[str, Any]:
         log_dir.mkdir(parents=True, exist_ok=True)
         export_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{job_id}.log"
+        export_baseline = {str(path): path.stat().st_size for path in export_dir.rglob("*.jsonl") if path.is_file()}
         with log_path.open("w", encoding="utf-8") as stream:
             process = subprocess.Popen(command, cwd=ENGINE_ROOT, stdout=stream, stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
-        job = {"id": job_id, "platform": platform, "mode": payload.get("mode", "search"), "status": "running", "started_at": _now(), "finished_at": None, "pid": process.pid, "log_file": str(log_path), "export_dir": str(export_dir), "command": command[1:]}
+        started_at = _now()
+        job = {"id": job_id, "platform": platform, "mode": payload.get("mode", "search"), "status": "running", "started_at": started_at, "finished_at": None, "pid": process.pid, "log_file": str(log_path), "export_dir": str(export_dir), "export_baseline": export_baseline, "command": command[1:]}
+        start_collection_task(job_id, platform, payload.get("mode", "search"), started_at)
         _jobs[job_id] = job
         _processes[job_id] = process
         threading.Thread(target=_watch_job, args=(job_id,), daemon=True).start()
         return dict(job)
+
+
+def _count_export_delta(job: dict[str, Any]) -> int:
+    baseline = job.get("export_baseline", {})
+    total = 0
+    for path in Path(job["export_dir"]).rglob("*.jsonl"):
+        if not path.is_file():
+            continue
+        try:
+            previous_size = baseline.get(str(path), 0)
+            with path.open("rb") as stream:
+                stream.seek(previous_size if path.stat().st_size >= previous_size else 0)
+                total += sum(1 for line in stream if line.strip())
+        except OSError:
+            continue
+    return total
+
+
+def _finalize_collection_task(job: dict[str, Any], exit_code: int) -> None:
+    status = job["status"]
+    result_count = _count_export_delta(job)
+    error_code = None if status == "succeeded" else f"exit_{exit_code}"
+    if status == "failed":
+        log_text = Path(job["log_file"]).read_text(encoding="utf-8", errors="replace").lower()
+        if any(marker in log_text for marker in ("captcha", "验证码", "403", "429", "rate limit", "登录失效", "账号被封")):
+            status = "blocked"
+            job["status"] = status
+            error_code = "platform_blocked"
+    finish_collection_task(
+        job["id"], status=status, result_count=result_count,
+        error_code=error_code, finished_at=job["finished_at"],
+    )
 
 
 def _watch_job(job_id: str) -> None:
@@ -128,9 +164,10 @@ def _watch_job(job_id: str) -> None:
     code = process.wait()
     with _lock:
         job = _jobs[job_id]
-        job["status"] = "succeeded" if code == 0 else "failed"
+        job["status"] = "interrupted" if job.get("stop_requested") else ("succeeded" if code == 0 else "failed")
         job["exit_code"] = code
         job["finished_at"] = _now()
+        _finalize_collection_task(job, code)
         _processes.pop(job_id, None)
 
 
@@ -140,9 +177,10 @@ def list_jobs() -> list[dict[str, Any]]:
             code = process.poll()
             if code is not None:
                 job = _jobs[job_id]
-                job["status"] = "succeeded" if code == 0 else "failed"
+                job["status"] = "interrupted" if job.get("stop_requested") else ("succeeded" if code == 0 else "failed")
                 job["exit_code"] = code
                 job["finished_at"] = _now()
+                _finalize_collection_task(job, code)
                 _processes.pop(job_id, None)
         return [dict(job) for job in sorted(_jobs.values(), key=lambda item: item["started_at"], reverse=True)]
 
@@ -163,6 +201,7 @@ def stop_job(job_id: str) -> dict[str, Any] | None:
     with _lock:
         process = _processes.get(job_id)
         if process:
+            _jobs[job_id]["stop_requested"] = True
             process.terminate()
     return get_job(job_id)
 

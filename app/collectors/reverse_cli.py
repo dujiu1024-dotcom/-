@@ -49,8 +49,16 @@ def collect(platform: str, mode: str, query: str, limit: int = 50) -> dict[str, 
         raise RuntimeError("可选采集引擎 reverse CLI 未安装")
     group, command = COMMANDS[platform][mode]
     args = [binary, group, command, query, "--limit", str(max(1, min(limit, 200)))]
-    result = subprocess.run(args, cwd=REVERSE_ROOT if REVERSE_ROOT.exists() else None,
-                            capture_output=True, text=True, timeout=180, check=False)
+    try:
+        result = subprocess.run(args, cwd=REVERSE_ROOT if REVERSE_ROOT.exists() else None,
+                                capture_output=True, text=True, timeout=180, check=False)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        finish_collection_task(
+            task_id, status="failed",
+            error_code="timeout" if isinstance(exc, subprocess.TimeoutExpired) else "launcher_error",
+            finished_at=datetime.now(UTC).isoformat(),
+        )
+        raise RuntimeError(f"reverse CLI 执行失败：{exc}") from exc
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout or "reverse CLI 执行失败")[-3000:])
     try:

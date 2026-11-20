@@ -127,6 +127,29 @@ def connect() -> sqlite3.Connection:
         ON demand_feedback(target_type, target_id, created_at DESC, id DESC)
     """)
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS collection_task_runs (
+            task_id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','blocked','interrupted')),
+            retry_count INTEGER NOT NULL DEFAULT 0 CHECK(retry_count >= 0),
+            result_count INTEGER NOT NULL DEFAULT 0 CHECK(result_count >= 0),
+            error_code TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            duration_ms INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_collection_task_runs_started
+        ON collection_task_runs(started_at DESC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_collection_task_runs_platform_started
+        ON collection_task_runs(platform, started_at DESC)
+    """)
+
     # Expression indexes match julianday() predicates and preserve legacy timestamp compatibility.
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_comments_platform_created_jd
@@ -375,3 +398,49 @@ def list_feedback(
         ).fetchall()
     return {"items": [dict(row) for row in rows], "total": int(total),
             "limit": limit, "offset": offset}
+
+
+def start_collection_task(task_id: str, platform: str, mode: str, started_at: str) -> None:
+    """Persist a collection attempt so quality metrics survive process restarts."""
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO collection_task_runs(
+                task_id,platform,mode,status,retry_count,result_count,started_at
+            ) VALUES(?,?,?,'running',0,0,?)
+            ON CONFLICT(task_id) DO NOTHING""",
+            (task_id, platform, mode, started_at),
+        )
+
+
+def finish_collection_task(
+    task_id: str, *, status: str, result_count: int = 0,
+    error_code: str | None = None, finished_at: str | None = None,
+) -> None:
+    if status not in {"succeeded", "failed", "blocked", "interrupted"}:
+        raise ValueError("invalid collection task terminal status")
+    if result_count < 0:
+        raise ValueError("result_count must be non-negative")
+    finished_at = finished_at or datetime.now(UTC).isoformat()
+    with connect() as conn:
+        conn.execute(
+            """UPDATE collection_task_runs
+               SET status=?, result_count=?, error_code=?, finished_at=?,
+                   duration_ms=MAX(0, CAST(
+                       (julianday(?) - julianday(started_at)) * 86400000 AS INTEGER
+                   ))
+               WHERE task_id=?""",
+            (status, result_count, error_code, finished_at, finished_at, task_id),
+        )
+
+
+def list_collection_task_runs(since_hours: int = 168) -> list[dict]:
+    if since_hours < 1 or since_hours > 8760:
+        raise ValueError("since_hours must be between 1 and 8760")
+    cutoff = (datetime.now(UTC) - timedelta(hours=since_hours)).isoformat()
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM collection_task_runs
+               WHERE started_at >= ? ORDER BY started_at DESC, task_id ASC""",
+            (cutoff,),
+        ).fetchall()
+    return [dict(row) for row in rows]

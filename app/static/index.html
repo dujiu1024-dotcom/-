@@ -12,6 +12,13 @@
 <section id="feedbackWorkspace"><div class="row" style="justify-content:space-between"><h2>人工反馈标注</h2><span id="feedbackTarget" class="muted">从评论或需求簇详情选择“标注”</span></div>
 <div class="grid"><div><label>标注结论</label><select id="feedbackLabel"><option value="valid_demand">有效需求</option><option value="non_demand">非需求 / 误判</option><option value="category_correction">修正需求类别</option><option value="merge">重复需求合并</option><option value="split">错误合并拆分</option></select></div><div><label>修正类别（可选）</label><input id="feedbackCategory" maxlength="100" placeholder="如：价格 / 功能 / 体验"></div><div><label>修正摘要（可选）</label><input id="feedbackSummary" maxlength="1000" placeholder="人工确认后的需求摘要"></div></div>
 <label>误判原因 / 判断依据</label><input id="feedbackReason" maxlength="2000" placeholder="说明为何有效、无效或需要修正"><label>证据备注</label><input id="feedbackEvidence" maxlength="4000" placeholder="补充原文证据或合并 / 拆分关系"><button id="submitFeedback" disabled>提交标注</button><div id="feedbackHistory" class="muted" style="margin-top:12px">选择对象后显示该对象的反馈历史。</div></section>
+<section id="qualityOverview">
+<div class="row" style="justify-content:space-between"><h2>数据质量总览</h2><div class="row"><select id="qualityPeriod"><option value="24">近 24 小时</option><option value="168" selected>近 7 天</option><option value="720">近 30 天</option></select><button class="secondary" id="refreshQuality">刷新质量指标</button></div></div>
+<div class="grid" id="qualityCards"><div class="muted">质量指标加载中…</div></div>
+<h3 style="font-size:14px;margin:18px 0 8px">字段完整率</h3><div id="qualityFields" class="muted">加载中…</div>
+<h3 style="font-size:14px;margin:18px 0 8px">来源健康状态</h3><div id="qualitySources" class="muted">加载中…</div>
+<p class="muted">指标按当前统计窗口实时聚合。字段“不适用”不会计入缺失率；重试率仅统计已记录的重试任务，当前采集器尚未实现自动重试。</p>
+</section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -56,5 +63,26 @@ $('submitFeedback').onclick=async()=>{
  }catch(e){alert(e.message)}
 };
 
+
+function qualityPct(v){return v===null||v===undefined?'—':(v*100).toFixed(1)+'%'}
+function qualityState(v){return ({healthy:'健康',low_yield:'低产出',failing:'失败',blocked:'受阻',unsupported:'不支持',paused:'暂停 / 未运行'})[v]||v}
+async function loadQuality(){
+ const d=await api('/api/v1/quality/overview?since_hours='+encodeURIComponent($('qualityPeriod').value));
+ const c=d.collection,q=d.field_quality;
+ const cards=[
+  ['采集任务',c.task_total+' 次','成功 '+c.task_succeeded+' / 失败 '+c.task_failed],
+  ['任务成功率',qualityPct(c.task_success_rate),'阻塞 '+c.task_blocked+' · 中断 '+c.task_interrupted],
+  ['重试率',qualityPct(c.retry_rate),'发生重试 '+c.retry_task_count+' 次任务'],
+  ['零结果率',qualityPct(c.zero_result_rate),'零结果 '+c.zero_result_task_count+' / 成功 '+c.task_succeeded],
+  ['字段完整率',qualityPct(q.overall_completeness_rate),'统计评论 '+q.comment_total+' 条'],
+  ['采集结果',String(c.result_count),'中位耗时 '+(c.median_duration_ms??'—')+' ms']
+ ];
+ $('qualityCards').innerHTML=cards.map(x=>'<section style="margin:0;padding:14px"><div class="muted">'+esc(x[0])+'</div><div style="font-size:24px;font-weight:700;margin:7px 0">'+esc(x[1])+'</div><div class="muted">'+esc(x[2])+'</div></section>').join('');
+ $('qualityFields').innerHTML='<table><tr><th>字段</th><th>完整率</th><th>完整 / 总量</th><th>状态</th></tr>'+Object.values(q.fields).map(x=>'<tr><td>'+esc(x.label)+'</td><td>'+qualityPct(x.completeness_rate)+'</td><td>'+(x.complete===null?'—':x.complete+' / '+x.total)+'</td><td>'+esc(x.status==='not_applicable'?'不适用':x.status==='supported'?'纳入统计':'未知')+'</td></tr>').join('')+'</table>';
+ $('qualitySources').innerHTML='<table><tr><th>来源</th><th>健康状态</th><th>任务数</th><th>成功率</th><th>平均结果</th><th>最近采集</th><th>诊断</th></tr>'+d.sources.map(x=>'<tr><td>'+esc(x.name)+' <span class="muted">('+esc(x.platform)+')</span></td><td>'+esc(qualityState(x.state))+'</td><td>'+x.task_count+'</td><td>'+qualityPct(x.success_rate)+'</td><td>'+(x.avg_result_count??'—')+'</td><td>'+esc(x.last_attempt_at||'—')+'</td><td>'+esc(x.reason)+'</td></tr>').join('')+'</table>';
+}
+$('refreshQuality').onclick=()=>loadQuality().catch(e=>{$('qualityCards').textContent=e.message});
+
 refresh().catch(e=>$('engineStatus').textContent=e.message);
+loadQuality().catch(e=>$('qualityCards').textContent=e.message);
 </script></body></html>
