@@ -110,3 +110,62 @@ def test_keyword_quality_thresholds_validate_ranges(tmp_path, monkeypatch):
         "max_duplicate_rate": 1.5
     })
     assert invalid.status_code == 422
+
+
+def test_verification_batch_records_metrics_and_threshold_decision(tmp_path, monkeypatch):
+    from app.storage import db
+    from app.services import discovery, keywords
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "verify.sqlite3")
+    discovery._ensure()
+    now = datetime.now(UTC).isoformat()
+    with db.connect() as conn:
+        conn.execute("""INSERT INTO keyword_candidates
+            (project_id,keyword,normalized_keyword,category,source_type,source_text,
+             generation_reason,status,created_at,updated_at)
+            VALUES('project-x','批量处理工具','批量处理工具','工具需求','comment','有没有批量处理工具',
+                   '来自评论','pending',?,?)""", (now, now))
+        candidate_id = conn.execute("SELECT id FROM keyword_candidates").fetchone()[0]
+
+    monkeypatch.setattr(discovery, "create_strategy", lambda project_id, payload: {
+        "id": "strategy-x", "project_id": project_id, **payload
+    })
+    monkeypatch.setattr(discovery, "create_discovery_run", lambda strategy_id: {"id": "run-x"})
+    monkeypatch.setattr(discovery, "execute_discovery_batch", lambda *args, **kwargs: {"status": "queued"})
+    batch = keywords.start_verification_batch("project-x", "bilibili", [candidate_id])
+    assert batch["status"] == "queued"
+
+    with db.connect() as conn:
+        for idx, body in enumerate(["有没有批量处理工具", "只是路过"]):
+            conn.execute("""INSERT INTO discovered_contents
+                (id,run_id,platform,content_url,title,body,author_name,author_url,
+                 published_at,query_term,fingerprint,status,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (f"content-{idx}", "run-x", "bilibili", f"https://example.com/{idx}",
+                 "批量处理工具", body, "", "", None, "批量处理工具",
+                 f"fingerprint-{idx}", "new", now))
+    monkeypatch.setattr(discovery, "refresh_discovery_run", lambda run_id: {"id": run_id, "status": "succeeded"})
+    result = keywords.get_verification_batch(batch["batch_id"])
+    assert result["status"] == "succeeded"
+    assert result["results"][0]["hit_count"] == 2
+    assert result["results"][0]["valid_demand_count"] == 1
+    assert result["results"][0]["duplicate_rate"] == 0.5
+    assert result["results"][0]["quality_pass"] is False
+
+
+def test_verification_rejects_unsupported_platform(tmp_path, monkeypatch):
+    from app.storage import db
+    from app.services.keywords import start_verification_batch
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "verify-platform.sqlite3")
+    with db.connect() as conn:
+        conn.execute("""INSERT INTO keyword_candidates
+            (project_id,keyword,normalized_keyword,category,source_type,source_text,
+             generation_reason,status,created_at,updated_at)
+            VALUES('p','测试词','测试词','场景表达','comment','测试来源','规则','pending','now','now')""")
+        cid = conn.execute("SELECT id FROM keyword_candidates").fetchone()[0]
+    try:
+        start_verification_batch("p", "youtube", [cid])
+    except ValueError as exc:
+        assert "暂不支持" in str(exc)
+    else:
+        raise AssertionError("unsupported platform should be rejected")
