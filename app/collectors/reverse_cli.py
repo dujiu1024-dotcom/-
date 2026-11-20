@@ -1,6 +1,7 @@
 import json
 import shutil
 import subprocess
+import sys
 from typing import Any
 
 from app.config import REVERSE_ROOT, REVERSE_URL
@@ -33,7 +34,7 @@ def install_reverse_cli() -> dict[str, Any]:
                                capture_output=True, text=True, timeout=300, check=False)
         if clone.returncode:
             raise RuntimeError((clone.stderr or clone.stdout)[-4000:])
-    result = subprocess.run(["python", "-m", "pip", "install", "-e", str(REVERSE_ROOT)],
+    result = subprocess.run([sys.executable, "-m", "pip", "install", "-e", str(REVERSE_ROOT)],
                             capture_output=True, text=True, timeout=900, check=False)
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout)[-6000:])
