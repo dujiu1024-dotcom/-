@@ -4,7 +4,8 @@
 
 ## 当前能力
 
-- 本地需求情报工作台：侧边栏分区、情报总览、采集库、评论数据、需求分析、任务中心和系统设置；评论数据支持分页与平台 / 时间筛选。\n- 采集库：按研究主题建立项目，在项目下保存关键词搜索、博主主页、指定内容等采集对象；支持启停、重复运行和删除采集配置，删除配置不删除历史评论。
+- 本地需求情报工作台：侧边栏分区、情报总览、采集库、评论数据、需求分析、任务中心和系统设置；评论数据支持分页与平台 / 时间筛选。
+- 采集库：按研究主题建立项目，在项目下保存关键词搜索、博主主页、指定内容等采集对象；支持启停、重复运行和删除采集配置，删除配置不删除历史评论。
 - MediaCrawler 运行适配器：首次安装上游代码与依赖，按平台启动可见浏览器。
 - 国内平台：小红书、抖音、快手、B站、微博、贴吧、知乎；扩展平台：今日头条、微信公众号文章、微信视频号、YouTube、Reddit、TikTok、X、Instagram、Threads、LinkedIn、Telegram、Quora，以及 Facebook / Pinterest 公共广告库。未实测连接器均明确标记状态。
 - 任务方式：关键词搜索、指定内容链接 / ID、博主主页。
@@ -50,7 +51,10 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 - `GET /`：本地工作台
 - `GET /health`
-- `GET /api/v1/collection/projects` / `POST /api/v1/collection/projects`\n- `POST /api/v1/collection/projects/{id}/sources` / `PATCH /api/v1/collection/sources/{id}` / `DELETE /api/v1/collection/sources/{id}`\n- `POST /api/v1/collection/sources/{id}/run`\n- `GET /api/v1/engine/status`
+- `GET /api/v1/collection/projects` / `POST /api/v1/collection/projects`
+- `POST /api/v1/collection/projects/{id}/sources` / `PATCH /api/v1/collection/sources/{id}` / `DELETE /api/v1/collection/sources/{id}`
+- `POST /api/v1/collection/sources/{id}/run`
+- `GET /api/v1/engine/status`
 - `POST /api/v1/engine/install`
 - `GET /api/v1/sessions`
 - `POST /api/v1/crawler/jobs`
