@@ -258,6 +258,59 @@ def execute_discovery_run(run_id, platform, query_index=0):
     return {"run_id": run_id, "status": "running", **execution}
 
 
+def _start_batch_task(run_id, execution):
+    index = execution["cursor"]
+    if index >= len(execution["tasks"]):
+        return None
+    task = execution["tasks"][index]
+    started_at = datetime.now(UTC)
+    job = start_job({"platform": task["platform"], "mode": "search",
+                     "keywords": task["query_term"], "max_posts": 30,
+                     "max_comments_per_post": 0, "include_replies": False})
+    execution.update({
+        "job_id": job["id"], "platform": task["platform"],
+        "query_term": task["query_term"], "query_index": task["query_index"],
+        "started_at": started_at.isoformat(), "started_epoch": started_at.timestamp(),
+    })
+    with connect() as conn:
+        conn.execute("UPDATE discovery_runs SET status='running', execution_json=?, notes=? WHERE id=?",
+                     (json.dumps(execution, ensure_ascii=False),
+                      f"批量执行 {index + 1}/{len(execution['tasks'])}：{task['platform']} · {task['query_term']}",
+                      run_id))
+    return job
+
+
+def execute_discovery_batch(run_id, platforms=None, max_tasks=100):
+    with connect() as conn:
+        row = conn.execute("""SELECT r.*, s.terms_json, s.platforms_json
+            FROM discovery_runs r JOIN search_strategies s ON s.id=r.strategy_id
+            WHERE r.id=?""", (run_id,)).fetchone()
+        if not row:
+            return None
+        run = dict(row)
+        if run["status"] == "running":
+            raise ValueError("该发现批次正在执行")
+        terms = json.loads(run["terms_json"])
+        allowed = json.loads(run["platforms_json"])
+        selected = list(dict.fromkeys(platforms or allowed))
+        if not selected:
+            raise ValueError("请在搜索策略中配置平台，或在批量执行时指定平台")
+        invalid = [p for p in selected if p not in SUPPORTED]
+        if invalid:
+            raise ValueError(f"暂不支持主动搜索的平台：{', '.join(invalid)}")
+        if allowed and any(p not in allowed for p in selected):
+            raise ValueError("批量执行平台超出搜索策略配置范围")
+        tasks = [{"platform": p, "query_term": term, "query_index": i}
+                 for p in selected for i, term in enumerate(terms)]
+        if len(tasks) > max_tasks:
+            raise ValueError(f"本批次最多 {max_tasks} 个任务，当前生成 {len(tasks)} 个；请拆分策略")
+        execution = {"batch": True, "tasks": tasks, "cursor": 0, "completed": 0, "failed": 0}
+    job = _start_batch_task(run_id, execution)
+    return {"run_id": run_id, "status": "running", "task_count": len(tasks),
+            "platform_count": len(selected), "first_job_id": job["id"],
+            "current_task": tasks[0]}
+
+
 def refresh_discovery_run(run_id):
     with connect() as conn:
         row = conn.execute("SELECT * FROM discovery_runs WHERE id=?", (run_id,)).fetchone()
@@ -276,16 +329,48 @@ def refresh_discovery_run(run_id):
                          (_now(), notes, run_id))
         return {"id": run_id, "status": "failed", "notes": notes}
     if job["status"] == "running":
-        return {"id": run_id, "status": "running", "job": job, "notes": "平台搜索执行中"}
+        return {"id": run_id, "status": "running", "job": job,
+                "notes": f"平台搜索执行中：{execution.get('platform')} · {execution.get('query_term')}"}
+    imported_count = 0
     if job["status"] == "succeeded":
         items = _import_discovery_exports(execution["platform"], execution["query_term"],
                                           execution["started_epoch"])
         imported = ingest_discovered(run_id, items) if items else {"inserted": 0}
-        final_status = "succeeded"
-        notes = f"平台任务完成；发现内容入库 {imported['inserted']} 条。"
-    else:
-        final_status = "failed"
-        notes = f"平台任务失败，退出码：{job.get('exit_code', 'unknown')}；请查看采集任务日志。"
+        imported_count = imported["inserted"]
+    if execution.get("batch"):
+        if job["status"] == "succeeded":
+            execution["completed"] += 1
+        else:
+            execution["failed"] += 1
+        execution["cursor"] += 1
+        execution.pop("job_id", None)
+        if execution["cursor"] < len(execution["tasks"]):
+            try:
+                next_job = _start_batch_task(run_id, execution)
+            except RuntimeError as exc:
+                notes = f"批量任务暂停：{exc}"
+                with connect() as conn:
+                    conn.execute("UPDATE discovery_runs SET status='paused', execution_json=?, notes=? WHERE id=?",
+                                 (json.dumps(execution, ensure_ascii=False), notes, run_id))
+                return {"id": run_id, "status": "paused", "completed": execution["completed"],
+                        "failed": execution["failed"], "task_count": len(execution["tasks"]), "notes": notes}
+            return {"id": run_id, "status": "running", "completed": execution["completed"],
+                    "failed": execution["failed"], "task_count": len(execution["tasks"]),
+                    "current_task": execution["tasks"][execution["cursor"]],
+                    "next_job_id": next_job["id"],
+                    "notes": f"已完成 {execution['cursor']}/{len(execution['tasks'])} 个任务，发现内容新增 {imported_count} 条。"}
+        final_status = "succeeded" if execution["failed"] == 0 else "partial"
+        notes = (f"批量执行结束：成功 {execution['completed']}，失败 {execution['failed']}；"
+                 f"累计发现 {list_discovered(run_id)['total']} 条。")
+        with connect() as conn:
+            conn.execute("UPDATE discovery_runs SET status=?, finished_at=?, execution_json=?, notes=? WHERE id=?",
+                         (final_status, _now(), json.dumps(execution, ensure_ascii=False), notes, run_id))
+        return {"id": run_id, "status": final_status, "completed": execution["completed"],
+                "failed": execution["failed"], "task_count": len(execution["tasks"]),
+                "result_count": list_discovered(run_id)["total"], "notes": notes}
+    final_status = "succeeded" if job["status"] == "succeeded" else "failed"
+    notes = (f"平台任务完成；发现内容入库 {imported_count} 条。" if final_status == "succeeded"
+             else f"平台任务失败，退出码：{job.get('exit_code', 'unknown')}；请查看采集任务日志。")
     with connect() as conn:
         conn.execute("UPDATE discovery_runs SET status=?, finished_at=?, notes=? WHERE id=?",
                      (final_status, _now(), notes, run_id))
