@@ -117,7 +117,8 @@ def discovery_run_tasks(run_id: str):
             raise HTTPException(404, "发现批次不存在")
         rows = conn.execute("""SELECT task_index,platform,query_term,query_index,status,job_id,
             started_at,finished_at,result_count,error,attempt_count,max_attempts,next_retry_at,
-            last_error_at,error_code,retryable,retry_after_seconds,log_path
+            last_error_at,error_code,retryable,retry_after_seconds,log_path,
+            export_dir,imported_file_count,imported_row_count
             FROM discovery_run_tasks WHERE run_id=? ORDER BY task_index""", (run_id,)).fetchall()
     return {"items": [dict(row) for row in rows], "total": len(rows)}
 
