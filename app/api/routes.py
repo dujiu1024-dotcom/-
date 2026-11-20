@@ -4,6 +4,10 @@ from app.collectors.mediacrawler_import import normalize_row, read_export
 from app.collectors.registry import list_platforms
 from app.config import DEFAULT_RECENT_HOURS, IMPORT_ROOT
 from app.models import ImportRequest
+from app.services.crawler_engine import (
+    engine_status, get_job, import_latest_exports, install_engine, read_job_log,
+    session_status, start_job, stop_job, list_jobs,
+)
 from app.services.demand import demand_candidates
 from app.storage.db import list_comments, upsert_comment
 
@@ -13,6 +17,72 @@ router = APIRouter(prefix="/api/v1")
 @router.get("/platforms")
 def platforms():
     return list_platforms()
+
+
+@router.get("/engine/status")
+def get_engine_status():
+    return engine_status()
+
+
+@router.post("/engine/install")
+def post_engine_install():
+    try:
+        return install_engine()
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@router.get("/sessions")
+def sessions():
+    return session_status()
+
+
+@router.post("/crawler/jobs")
+def create_crawler_job(payload: dict):
+    try:
+        return start_job(payload)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/crawler/jobs")
+def crawler_jobs():
+    return {"items": list_jobs()}
+
+
+@router.get("/crawler/jobs/{job_id}")
+def crawler_job(job_id: str):
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    return job
+
+
+@router.get("/crawler/jobs/{job_id}/log")
+def crawler_job_log(job_id: str):
+    try:
+        return {"job_id": job_id, "log": read_job_log(job_id)}
+    except KeyError as exc:
+        raise HTTPException(404, "任务不存在") from exc
+
+
+@router.delete("/crawler/jobs/{job_id}")
+def delete_crawler_job(job_id: str):
+    job = stop_job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    return job
+
+
+@router.post("/imports/exports")
+def import_exports():
+    try:
+        counts = import_latest_exports()
+    except (ValueError, OSError, UnicodeError) as exc:
+        raise HTTPException(400, f"导入失败：{exc}") from exc
+    return {"imported_by_platform": counts, "total_imported": sum(counts.values())}
 
 
 @router.post("/imports/mediacrawler")
@@ -33,8 +103,7 @@ def import_mediacrawler(request: ImportRequest):
             imported += 1
     except (ValueError, OSError, UnicodeError) as exc:
         raise HTTPException(400, f"导入失败：{exc}") from exc
-    return {"platform": request.platform, "imported": imported, "skipped": skipped,
-            "source": candidate.name}
+    return {"platform": request.platform, "imported": imported, "skipped": skipped, "source": candidate.name}
 
 
 @router.get("/comments")
