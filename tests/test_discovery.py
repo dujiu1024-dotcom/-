@@ -120,3 +120,65 @@ def test_discovery_execution_rejects_unavailable_platform(tmp_path, monkeypatch)
     response = client.post(f"/api/v1/discovery/runs/{run['id']}/execute?platform=youtube")
     assert response.status_code == 409
     assert "暂未接入原生搜索执行" in response.json()["detail"]
+
+
+
+def test_discovery_batch_runs_platforms_sequentially(tmp_path, monkeypatch):
+    from app.storage import db
+    from app.services import discovery
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-batch.sqlite3")
+    monkeypatch.setattr(discovery, "DATA_ROOT", tmp_path)
+    jobs = {}
+    counter = {"value": 0}
+
+    def start_job(payload):
+        counter["value"] += 1
+        job = {"id": f"job-{counter['value']}", "status": "running",
+               "platform": payload["platform"]}
+        jobs[job["id"]] = job
+        return job
+
+    monkeypatch.setattr(discovery, "start_job", start_job)
+    monkeypatch.setattr(discovery, "get_job", lambda job_id: jobs.get(job_id))
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "批量发现"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "跨平台策略", "topic": "AI 办公",
+        "terms": ["AI PPT"], "platforms": ["bilibili", "zhihu"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+
+    started = client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch", json={})
+    assert started.status_code == 200
+    assert started.json()["task_count"] == 2
+    assert started.json()["current_task"]["platform"] == "bilibili"
+
+    jobs["job-1"]["status"] = "succeeded"
+    advanced = client.get(f"/api/v1/discovery/runs/{run['id']}").json()
+    assert advanced["status"] == "running"
+    assert advanced["completed"] == 1
+    assert advanced["current_task"]["platform"] == "zhihu"
+    assert counter["value"] == 2
+
+    jobs["job-2"]["status"] = "succeeded"
+    finished = client.get(f"/api/v1/discovery/runs/{run['id']}").json()
+    assert finished["status"] == "succeeded"
+    assert finished["completed"] == 2
+    assert finished["failed"] == 0
+
+
+def test_discovery_batch_limits_task_count_and_platform_scope(tmp_path, monkeypatch):
+    from app.storage import db
+
+    monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "discovery-batch-limits.sqlite3")
+    client = TestClient(app)
+    project = client.post("/api/v1/collection/projects", json={"name": "范围校验"}).json()
+    strategy = client.post(f"/api/v1/discovery/projects/{project['id']}/strategies", json={
+        "name": "范围策略", "topic": "测试", "terms": ["a", "b"],
+        "platforms": ["bilibili"]
+    }).json()
+    run = client.post(f"/api/v1/discovery/strategies/{strategy['id']}/runs").json()
+    response = client.post(f"/api/v1/discovery/runs/{run['id']}/execute-batch",
+                           json={"platforms": ["zhihu"]})
+    assert response.status_code == 409
