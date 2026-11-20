@@ -1,5 +1,6 @@
-from datetime import timezone
-from app.collectors.mediacrawler_import import normalize_row, _parse_datetime
+from datetime import UTC
+
+from app.collectors.mediacrawler_import import _parse_datetime, normalize_row
 
 
 def test_normalize_common_comment_fields():
@@ -14,7 +15,7 @@ def test_normalize_common_comment_fields():
     assert record.comment_id == "c-1"
     assert record.content_id == "v-1"
     assert record.comment_created_at is not None
-    assert record.comment_created_at.tzinfo == timezone.utc
+    assert record.comment_created_at.tzinfo == UTC
 
 
 def test_unknown_timezone_is_not_guessed():
