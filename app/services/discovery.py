@@ -289,7 +289,7 @@ def execute_discovery_run(run_id, platform, query_index=0):
         task = {"platform": platform, "query_term": terms[query_index],
                 "query_index": query_index}
         execution = {"batch": True, "tasks": [task], "cursor": 0,
-                     "completed": 0, "failed": 0, "created_at": _now(), "max_posts": max(1, min(int(max_posts), 100))}
+                     "completed": 0, "failed": 0, "created_at": _now()}
     with connect() as conn:
         cur = conn.execute(
             "UPDATE discovery_runs SET status='queued', execution_json=?, notes=? WHERE id=? AND status='prepared'",
