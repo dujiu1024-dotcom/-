@@ -12,7 +12,8 @@ from app.services.crawler_engine import (
     engine_status, get_job, import_latest_exports, install_engine, read_job_log,
     session_status, start_job, stop_job, list_jobs,
 )
-from app.services.demand import demand_candidates\nfrom app.services.keywords import (generate_candidates, list_candidates, get_candidate, review_candidate, include_candidate, start_verification_batch, get_verification_batch, get_quality_thresholds, update_quality_thresholds)
+from app.services.demand import demand_candidates
+from app.services.keywords import (generate_candidates, list_candidates, get_candidate, review_candidate, include_candidate, start_verification_batch, get_verification_batch, get_quality_thresholds, update_quality_thresholds)
 from app.services.settings import get_settings, update_recent_hours
 from app.storage.db import get_recent_hours, list_comments, upsert_comment
 
