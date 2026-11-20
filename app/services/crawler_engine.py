@@ -60,6 +60,12 @@ def install_engine() -> dict[str, Any]:
         installed = subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(requirements)], capture_output=True, text=True, timeout=900, check=False)
         if installed.returncode:
             raise RuntimeError((installed.stderr or installed.stdout or "依赖安装失败")[-6000:])
+    browser_install = subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+        capture_output=True, text=True, timeout=900, check=False,
+    )
+    if browser_install.returncode:
+        raise RuntimeError((browser_install.stderr or browser_install.stdout or "Playwright 浏览器安装失败")[-6000:])
     return {"installed": True, "already_installed": False, "isolated_profiles": True, "root": str(ENGINE_ROOT)}
 
 
