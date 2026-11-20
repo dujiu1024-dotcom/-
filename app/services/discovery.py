@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 import uuid
 from datetime import UTC, datetime
 
@@ -6,6 +8,10 @@ from app.collectors.mediacrawler_import import read_export
 from app.config import DATA_ROOT
 from app.services.crawler_engine import SUPPORTED, get_job, start_job
 from app.storage.db import connect
+
+_worker_lock = threading.Lock()
+_worker_thread = None
+_worker_stop = threading.Event()
 
 
 def _now():
@@ -37,6 +43,15 @@ def _ensure():
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_discovered_contents_run ON discovered_contents(run_id);
+        CREATE TABLE IF NOT EXISTS discovery_run_tasks (
+            id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES discovery_runs(id) ON DELETE CASCADE,
+            task_index INTEGER NOT NULL, platform TEXT NOT NULL, query_term TEXT NOT NULL,
+            query_index INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'queued',
+            job_id TEXT, pid INTEGER, started_at TEXT, finished_at TEXT,
+            result_count INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+            UNIQUE(run_id, task_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_discovery_run_tasks_status ON discovery_run_tasks(status, run_id, task_index);
         """)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(discovery_runs)")}
         if "execution_json" not in columns:
@@ -277,6 +292,9 @@ def _start_batch_task(run_id, execution):
                      (json.dumps(execution, ensure_ascii=False),
                       f"批量执行 {index + 1}/{len(execution['tasks'])}：{task['platform']} · {task['query_term']}",
                       run_id))
+        conn.execute("""UPDATE discovery_run_tasks SET status='running', job_id=?, pid=?, started_at=?, error=''
+            WHERE run_id=? AND task_index=? AND status IN ('queued','interrupted')""",
+            (job["id"], job.get("pid"), started_at.isoformat(), run_id, index))
     return job
 
 
@@ -304,7 +322,18 @@ def execute_discovery_batch(run_id, platforms=None, max_tasks=100):
                  for p in selected for i, term in enumerate(terms)]
         if len(tasks) > max_tasks:
             raise ValueError(f"本批次最多 {max_tasks} 个任务，当前生成 {len(tasks)} 个；请拆分策略")
-        execution = {"batch": True, "tasks": tasks, "cursor": 0, "completed": 0, "failed": 0}
+        execution = {"batch": True, "tasks": tasks, "cursor": 0, "completed": 0, "failed": 0,
+                 "created_at": _now()}
+    with connect() as conn:
+        conn.execute("UPDATE discovery_runs SET status='queued', execution_json=?, notes=? WHERE id=?",
+                     (json.dumps(execution, ensure_ascii=False), "批量任务已持久化，等待后台调度器执行。", run_id))
+        conn.execute("DELETE FROM discovery_run_tasks WHERE run_id=?", (run_id,))
+        for index, task in enumerate(tasks):
+            conn.execute("""INSERT INTO discovery_run_tasks
+                (id,run_id,task_index,platform,query_term,query_index,status)
+                VALUES(?,?,?,?,?,?,?)""",
+                (uuid.uuid4().hex[:12], run_id, index, task["platform"],
+                 task["query_term"], task["query_index"], "queued"))
     job = _start_batch_task(run_id, execution)
     return {"run_id": run_id, "status": "running", "task_count": len(tasks),
             "platform_count": len(selected), "first_job_id": job["id"],
@@ -323,7 +352,14 @@ def refresh_discovery_run(run_id):
                 "notes": run["notes"]}
     job = get_job(execution["job_id"])
     if not job:
-        notes = "本机任务记录不存在，可能服务重启导致任务状态丢失；请重新创建发现批次。"
+        notes = "任务进程记录在服务重启后不可恢复，批次已暂停；确认旧进程已退出后可手动恢复当前子任务。"
+        if execution.get("batch"):
+            with connect() as conn:
+                conn.execute("UPDATE discovery_run_tasks SET status='interrupted', error=?, finished_at=? WHERE run_id=? AND task_index=? AND status='running'",
+                             (notes, _now(), run_id, execution.get("cursor", 0)))
+                conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?", (notes, run_id))
+            return {"id": run_id, "status": "paused", "completed": execution.get("completed", 0),
+                    "failed": execution.get("failed", 0), "task_count": len(execution.get("tasks", [])), "notes": notes}
         with connect() as conn:
             conn.execute("UPDATE discovery_runs SET status='failed', finished_at=?, notes=? WHERE id=?",
                          (_now(), notes, run_id))
@@ -338,6 +374,12 @@ def refresh_discovery_run(run_id):
         imported = ingest_discovered(run_id, items) if items else {"inserted": 0}
         imported_count = imported["inserted"]
     if execution.get("batch"):
+        with connect() as conn:
+            conn.execute("""UPDATE discovery_run_tasks SET status=?, finished_at=?, result_count=?, error=?
+                WHERE run_id=? AND task_index=?""",
+                ("succeeded" if job["status"] == "succeeded" else "failed", _now(),
+                 imported_count, "" if job["status"] == "succeeded" else f"采集任务退出码：{job.get('exit_code', 'unknown')}",
+                 run_id, execution.get("cursor", 0)))
         if job["status"] == "succeeded":
             execution["completed"] += 1
         else:
@@ -376,3 +418,78 @@ def refresh_discovery_run(run_id):
                      (final_status, _now(), notes, run_id))
     return {"id": run_id, "status": final_status, "result_count": list_discovered(run_id)["total"],
             "notes": notes, "job": job}
+
+
+
+def resume_discovery_batch(run_id):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM discovery_runs WHERE id=?", (run_id,)).fetchone()
+        if not row:
+            return None
+        if row["status"] != "paused":
+            raise ValueError("只有已暂停的批次可以恢复")
+        execution = json.loads(row["execution_json"] or "{}")
+        if not execution.get("batch"):
+            raise ValueError("该批次不是批量任务")
+        cursor = execution.get("cursor", 0)
+        if cursor >= len(execution.get("tasks", [])):
+            raise ValueError("批次没有待恢复的子任务")
+        task = conn.execute("SELECT * FROM discovery_run_tasks WHERE run_id=? AND task_index=?",
+                            (run_id, cursor)).fetchone()
+        if task and task["status"] == "interrupted":
+            conn.execute("UPDATE discovery_run_tasks SET status='queued', job_id=NULL, pid=NULL, error='' WHERE id=?",
+                         (task["id"],))
+        conn.execute("UPDATE discovery_runs SET status='queued', notes=? WHERE id=?",
+                     ("用户确认旧任务已停止，等待后台调度器恢复当前子任务。", run_id))
+    try:
+        job = _start_batch_task(run_id, execution)
+    except RuntimeError as exc:
+        raise ValueError(f"恢复失败：{exc}") from exc
+    return {"id": run_id, "status": "running", "job_id": job["id"],
+            "current_task": execution["tasks"][cursor], "notes": "已恢复当前子任务"}
+
+
+def start_discovery_worker():
+    global _worker_thread
+    with _worker_lock:
+        if _worker_thread and _worker_thread.is_alive():
+            return False
+        _worker_stop.clear()
+
+        def loop():
+            _ensure()
+            # A job registry is process-local. Never assume a pre-restart PID is safe to resume.
+            with connect() as conn:
+                rows = conn.execute("SELECT id,execution_json FROM discovery_runs WHERE status IN ('running','queued')").fetchall()
+                for row in rows:
+                    execution = json.loads(row["execution_json"] or "{}")
+                    if row["id"] and execution.get("job_id"):
+                        conn.execute("UPDATE discovery_run_tasks SET status='interrupted', error=?, finished_at=? WHERE run_id=? AND status='running'",
+                                     ("服务重启，原采集进程状态不可确认；需人工确认后恢复。", _now(), row["id"]))
+                        conn.execute("UPDATE discovery_runs SET status='paused', notes=? WHERE id=?",
+                                     ("服务重启后批次暂停；确认旧采集进程已退出后可恢复。", row["id"]))
+            while not _worker_stop.is_set():
+                try:
+                    with connect() as conn:
+                        rows = conn.execute("SELECT id FROM discovery_runs WHERE status='running' ORDER BY started_at").fetchall()
+                    for row in rows:
+                        if _worker_stop.is_set():
+                            break
+                        try:
+                            refresh_discovery_run(row["id"])
+                        except (RuntimeError, OSError, ValueError):
+                            continue
+                except (RuntimeError, OSError, ValueError):
+                    pass
+                _worker_stop.wait(2)
+
+        _worker_thread = threading.Thread(target=loop, name="discovery-batch-worker", daemon=True)
+        _worker_thread.start()
+        return True
+
+
+def stop_discovery_worker():
+    _worker_stop.set()
+    thread = _worker_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=3)
