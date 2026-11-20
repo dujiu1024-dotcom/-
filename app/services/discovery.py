@@ -9,7 +9,7 @@ from pathlib import Path
 
 from app.collectors.mediacrawler_import import read_export
 from app.config import DATA_ROOT
-from app.services.crawler_engine import SUPPORTED, get_job, start_job
+from app.services.crawler_engine import SUPPORTED, get_job, get_process_identity, start_job
 from app.services.collection_errors import classify_collection_error
 from app.storage.db import connect
 
@@ -81,6 +81,7 @@ def _ensure():
             "retryable": "INTEGER NOT NULL DEFAULT 0",
             "retry_after_seconds": "INTEGER",
             "log_path": "TEXT NOT NULL DEFAULT ''",
+            "process_identity": "TEXT NOT NULL DEFAULT ''",
         }
         for name, definition in migrations.items():
             if name not in task_columns:
@@ -125,6 +126,8 @@ def _ensure():
         attempt_columns = {row[1] for row in conn.execute("PRAGMA table_info(discovery_task_attempts)")}
         if "export_dir" not in attempt_columns:
             conn.execute("ALTER TABLE discovery_task_attempts ADD COLUMN export_dir TEXT NOT NULL DEFAULT ''")
+        if "process_identity" not in attempt_columns:
+            conn.execute("ALTER TABLE discovery_task_attempts ADD COLUMN process_identity TEXT NOT NULL DEFAULT ''")
 
 
 def _claim_worker_lease(owner_id, lease_seconds=_WORKER_LEASE_SECONDS):
@@ -614,8 +617,10 @@ def _start_batch_task(run_id, execution, lease_owner=None):
     if lease_owner and not _renew_worker_lease(lease_owner):
         notes = "启动期间全局租约失效；任务进程信息已保留，批次暂停，需确认进程状态后恢复。"
         with connect() as conn:
-            conn.execute("UPDATE discovery_run_tasks SET status='interrupted', job_id=?, pid=?, finished_at=?, error=? WHERE run_id=? AND task_index=?",
-                         (job["id"], job.get("pid"), _now(), notes, run_id, index))
+            conn.execute("UPDATE discovery_run_tasks SET status='interrupted', job_id=?, pid=?, process_identity=?, finished_at=?, error=? WHERE run_id=? AND task_index=?",
+                         (job["id"], job.get("pid"), job.get("process_identity") or "", _now(), notes, run_id, index))
+            conn.execute("UPDATE discovery_task_attempts SET job_id=?,pid=?,process_identity=? WHERE task_id=? AND attempt_number=?",
+                         (job["id"], job.get("pid"), job.get("process_identity") or "", task_row["id"], attempt_number))
             conn.execute("UPDATE discovery_runs SET status='paused', execution_json=?, notes=? WHERE id=?",
                          (json.dumps(execution, ensure_ascii=False), notes, run_id))
         raise RuntimeError(notes)
@@ -624,8 +629,10 @@ def _start_batch_task(run_id, execution, lease_owner=None):
                      (json.dumps(execution, ensure_ascii=False),
                       f"批量执行 {index + 1}/{len(execution['tasks'])}：{task['platform']} · {task['query_term']}",
                       run_id))
-        conn.execute("UPDATE discovery_run_tasks SET status='running', job_id=?, pid=?, started_at=?, error='' WHERE run_id=? AND task_index=? AND status='starting'",
-                     (job["id"], job.get("pid"), started_at.isoformat(), run_id, index))
+        conn.execute("UPDATE discovery_run_tasks SET status='running', job_id=?, pid=?, process_identity=?, started_at=?, error='' WHERE run_id=? AND task_index=? AND status='starting'",
+                     (job["id"], job.get("pid"), job.get("process_identity") or "", started_at.isoformat(), run_id, index))
+        conn.execute("UPDATE discovery_task_attempts SET job_id=?,pid=?,process_identity=? WHERE task_id=? AND attempt_number=?",
+                     (job["id"], job.get("pid"), job.get("process_identity") or "", task_row["id"], attempt_number))
     return job
 
 
@@ -851,8 +858,17 @@ def resume_discovery_batch(run_id):
         execution.pop("started_epoch", None)
         task = conn.execute("SELECT * FROM discovery_run_tasks WHERE run_id=? AND task_index=?",
                             (run_id, cursor)).fetchone()
+        if task and task["status"] == "interrupted" and task["pid"]:
+            current_identity = get_process_identity(task["pid"])
+            expected_identity = task["process_identity"] or ""
+            if current_identity is not None and not expected_identity:
+                raise ValueError("无法安全恢复：历史任务缺少 PID 启动身份，当前 PID 仍存在；请先人工确认并停止旧进程")
+            if current_identity is not None and current_identity == expected_identity:
+                raise ValueError("无法恢复：原采集子进程仍在运行；请先停止该进程并重新确认")
+            # Missing PID or a different identity proves the original process is gone.
+            # Never signal a PID whose identity differs: it may belong to another process.
         if task and task["status"] == "interrupted":
-            conn.execute("UPDATE discovery_run_tasks SET status='queued', job_id=NULL, pid=NULL, error='' WHERE id=?",
+            conn.execute("UPDATE discovery_run_tasks SET status='queued', job_id=NULL, pid=NULL, process_identity='', error='' WHERE id=?",
                          (task["id"],))
         conn.execute("UPDATE discovery_runs SET status='queued', execution_json=?, notes=? WHERE id=? AND status='paused'",
                      (json.dumps(execution, ensure_ascii=False),

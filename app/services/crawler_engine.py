@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -22,6 +23,33 @@ _processes: dict[str, subprocess.Popen] = {}
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def get_process_identity(pid: int | str | None) -> str | None:
+    """Return a stable identity for the process currently occupying a PID.
+
+    Process start time and command line are combined to detect PID reuse.
+    None means the PID is not currently observable.
+    """
+    if pid is None:
+        return None
+    try:
+        numeric_pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if numeric_pid <= 0:
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(numeric_pid), "-o", "lstart=", "-o", "command="],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    identity = " ".join((result.stdout or "").split())
+    if result.returncode != 0 or not identity:
+        return None
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def engine_status() -> dict[str, Any]:
@@ -125,7 +153,7 @@ def start_job(payload: dict[str, Any]) -> dict[str, Any]:
         log_path = log_dir / f"{job_id}.log"
         with log_path.open("w", encoding="utf-8") as stream:
             process = subprocess.Popen(command, cwd=ENGINE_ROOT, stdout=stream, stderr=subprocess.STDOUT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
-        job = {"id": job_id, "platform": platform, "mode": payload.get("mode", "search"), "status": "running", "started_at": _now(), "finished_at": None, "pid": process.pid, "log_file": str(log_path), "export_dir": str(export_dir), "command": command[1:], "retry_count": 0, "error_category": None, "error_code": None, "error_message": None, "error_occurred_at": None, "retryable": False, "manual_intervention": False, "error_hint": None}
+        job = {"id": job_id, "platform": platform, "mode": payload.get("mode", "search"), "status": "running", "started_at": _now(), "finished_at": None, "pid": process.pid, "process_identity": get_process_identity(process.pid), "log_file": str(log_path), "export_dir": str(export_dir), "command": command[1:], "retry_count": 0, "error_category": None, "error_code": None, "error_message": None, "error_occurred_at": None, "retryable": False, "manual_intervention": False, "error_hint": None}
         _jobs[job_id] = job
         _processes[job_id] = process
         threading.Thread(target=_watch_job, args=(job_id,), daemon=True).start()
