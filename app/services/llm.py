@@ -68,8 +68,10 @@ def expand_keyword_batch(sources: list[dict]) -> list[dict]:
     if not LLM_API_KEY or not LLM_MODEL:
         raise LLMUnavailable("未配置 LLM_API_KEY / LLM_MODEL")
     system = ("从用户评论/需求表达提取短而具体的搜索词。只返回 JSON {items:[{source_ref,candidates:"
-              "[{keyword,category,reason,original_expression}]}]}。每条来源最多 5 个。覆盖问题表达、场景词、"
-              "痛点词、求助词、替代方案词、付费意愿；不得补充来源没有的事实。source_ref 必须原样返回。"
+              "[{keyword,category,reason,original_expression,confidence,suggested_platforms,negative_terms}]}]}。"
+              "每条来源最多 5 个。覆盖问题表达、场景词、痛点词、求助词、替代方案词、付费意愿；"
+              "不得补充来源没有的事实。source_ref 必须原样返回。confidence 为 0 到 1 的证据置信度；"
+              "suggested_platforms 只填适合试搜的平台代码；negative_terms 为排除歧义词。"
               "排除泛词、广告、纯情绪。")
     data = _post("chat/completions", {"model": LLM_MODEL, "temperature": 0.1,
         "response_format": {"type": "json_object"},
