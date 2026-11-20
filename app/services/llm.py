@@ -63,3 +63,32 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
         return [row["embedding"] for row in sorted(data["data"], key=lambda x: x["index"])]
     except (KeyError, TypeError) as exc:
         raise LLMUnavailable(f"Embedding 返回结构错误：{exc}") from exc
+
+
+def expand_keyword_batch(sources: list[dict]) -> list[dict]:
+    """Extract search-language candidates while preserving each source reference."""
+    if not LLM_API_KEY or not LLM_MODEL:
+        raise LLMUnavailable("未配置 LLM_API_KEY / LLM_MODEL")
+    prompt = (
+        "你是搜索词研究助手。对每条用户评论/需求表达提取可用于发现相似公开需求的搜索词。"
+        "只输出 JSON 对象 {items:[{source_ref, candidates:[{keyword,category,reason,original_expression}]}]}。"
+        "候选词应短而具体，覆盖问题表达、场景词、痛点词、求助词、替代方案词和付费意愿表达；"
+        "不要把评论全文改写成关键词，不得补充来源中没有的事实。每个 source_ref 必须原样返回。"
+        "排除泛词、品牌堆砌、广告、纯情绪和无法形成搜索意图的词。每条来源最多 5 个候选。"
+        "category 仅允许：问题表达、场景词、痛点词、求助词、替代方案词、付费意愿。"
+    )
+    data = _post("chat/completions", {
+        "model": LLM_MODEL, "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(sources, ensure_ascii=False)},
+        ],
+    })
+    try:
+        items = json.loads(data["choices"][0]["message"]["content"])["items"]
+        valid_refs = {row["source_ref"] for row in sources}
+        return [row for row in items if row.get("source_ref") in valid_refs
+                and isinstance(row.get("candidates"), list)]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise LLMUnavailable(f"扩词模型返回结构不符合约定：{exc}") from exc
