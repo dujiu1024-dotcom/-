@@ -49,7 +49,7 @@ def discover_candidates(limit: int = 500) -> dict[str, Any]:
                    COUNT(DISTINCT substr(COALESCE(c.comment_created_at,''),1,10)) AS active_days,
                    MAX(c.comment_created_at) AS last_seen,
                    SUM(CASE WHEN a.category IS NOT NULL AND a.category NOT IN ('无效','其他','') THEN 1 ELSE 0 END) AS demand_count,
-                   MAX(c.content_url) AS profile_url, MAX(c.content_title) AS sample_title
+                   NULL AS profile_url, MAX(c.content_title) AS sample_title
             FROM comments c LEFT JOIN demand_analyses a
               ON a.platform=c.platform AND a.comment_id=c.comment_id
             WHERE COALESCE(trim(c.author_key),'') <> ''
